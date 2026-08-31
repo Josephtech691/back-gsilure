@@ -104,10 +104,10 @@ const totaux = await db.query(`
     (SELECT COALESCE(SUM(cv.montant_recu), 0) FROM clients_vente cv) AS total_encaisse,
     (SELECT COALESCE(SUM(p.kg_perdus), 0) FROM pertes_stock p) AS total_kg_perdu
   FROM stocks s`);
-
+const t = totaux.rows[0];
 const reste_kg = parseFloat(t.total_kg_achete) - parseFloat(t.total_kg_vendu) - parseFloat(t.total_kg_perdu);
 
-    const t = totaux.rows[0];
+    
 
     res.json({
       bacs: entrees.rows,
@@ -133,8 +133,8 @@ const r = await db.query(`
     (SELECT COALESCE(SUM(p.kg_perdus), 0) FROM pertes_stock p) AS total_kg_perdu
   FROM stocks s`);
 
-  const row = r.row[0];
-const reste = parseFloat(t.total_kg_achete) - parseFloat(row.total_kg_vendu) - parseFloat(row.total_kg_perdu);
+  const row = r.rows[0];
+const reste = parseFloat(row.total_kg_achete) - parseFloat(row.total_kg_vendu) - parseFloat(row.total_kg_perdu);
     
     
     res.json({ ...row, reste_stock_kg: reste });
