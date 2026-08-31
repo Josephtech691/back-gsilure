@@ -358,6 +358,7 @@ const graphiqueEmploye = async (req, res) => {
       FROM stocks GROUP BY type_stock, poids_categorie, bac_numero ORDER BY bac_numero`);
 
     const totalVendu = await db.query(`SELECT COALESCE(SUM(kg_achetes), 0) AS total FROM clients_vente`);
+    const totalPerdu = await db.query(`SELECT COALESCE(SUM(kg_perdus), 0) AS total FROM pertes_stock`);
 
     const totaux = ventes.rows.reduce((acc, r) => ({
       kg_total: acc.kg_total + parseFloat(r.kg_vendus),
@@ -386,6 +387,8 @@ const graphiqueEmploye = async (req, res) => {
         par_type: stock.rows,
         total_kg_achete: stock.rows.reduce((s, r) => s + parseFloat(r.total_kg || 0), 0),
         total_kg_vendu: parseFloat(totalVendu.rows[0].total),
+        total_kg_perdu: parseFloat(totalPerdu.rows[0].total),
+total_kg_restant: stock.rows.reduce((s,r) => s+parseFloat(r.total_kg||0), 0) - parseFloat(totalVendu.rows[0].total) - parseFloat(totalPerdu.rows[0].total),
       },
       caisse_cumulee: {
         ventes: parseFloat(cumulVentes.rows[0].total),
@@ -458,8 +461,9 @@ const dashboard = async (req, res) => {
 
     const stock = await db.query(`
       SELECT COALESCE(SUM(quantite_kg), 0) AS total_achete,
-             (SELECT COALESCE(SUM(kg_achetes), 0) FROM clients_vente) AS total_vendu
-      FROM stocks`);
+       (SELECT COALESCE(SUM(kg_achetes), 0) FROM clients_vente) AS total_vendu,
+       (SELECT COALESCE(SUM(kg_perdus), 0) FROM pertes_stock) AS total_kg_perdu
+FROM stocks`);
 
     const clientsDuJour = await db.query(`
       SELECT cv.*, u.nom || ' ' || u.prenom AS employe_nom
@@ -528,7 +532,8 @@ caisse_cumulee: {
       stock: {
         total_kg_achete: parseFloat(stock.rows[0].total_achete),
         total_kg_vendu: parseFloat(stock.rows[0].total_vendu),
-        reste_kg: parseFloat(stock.rows[0].total_achete) - parseFloat(stock.rows[0].total_vendu),
+       total_kg_perdu: parseFloat(stock.rows[0].total_kg_perdu),
+reste_kg: parseFloat(stock.rows[0].total_achete) - parseFloat(stock.rows[0].total_vendu) - parseFloat(stock.rows[0].total_kg_perdu),
       },
       clients_du_jour: clientsDuJour.rows,
       nb_demandes_attente: parseInt(demandesEnAttente.rows[0].nb),
