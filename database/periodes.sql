@@ -2,11 +2,11 @@
 -- À exécuter une seule fois sur la base PostgreSQL.
 
 CREATE TABLE IF NOT EXISTS periodes_dashboard (
-  id SERIAL PRIMARY KEY,
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   date_debut DATE NOT NULL,
   date_fin DATE NULL,
   commentaire TEXT NULL,
-  created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+  created_by UUID NULL REFERENCES users(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CHECK (date_fin IS NULL OR date_fin >= date_debut)
 );
@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS periodes_dashboard (
 CREATE TABLE IF NOT EXISTS dashboard_periode_config (
   id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   periode_active BOOLEAN NOT NULL DEFAULT FALSE,
-  periode_id INTEGER NULL REFERENCES periodes_dashboard(id) ON DELETE SET NULL,
+  periode_id UUID NULL REFERENCES periodes_dashboard(id) ON DELETE SET NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
