@@ -26,3 +26,23 @@ Ajoutez les variables de `.env.example` dans Vercel > Settings > Environment Var
 Cette version conserve les routes REST du chat mais retire Socket.IO du serveur Vercel.
 Si votre frontend utilisait Socket.IO, il doit être adapté aux endpoints REST existants ou Socket.IO doit être déployé sur un service WebSocket séparé.
 "# back-gsilure" 
+
+## Système de périodes du dashboard admin
+
+Une migration SQL est fournie dans `database/periodes.sql`.
+Elle crée `periodes_dashboard` et `dashboard_periode_config`.
+
+À exécuter sur la même base PostgreSQL que l'application avant d'utiliser les nouvelles routes `/api/periodes`.
+
+Routes admin :
+- `GET /api/periodes` : historique + configuration de la période courante
+- `POST /api/periodes` : créer une période (elle devient automatiquement la période active)
+- `PATCH /api/periodes/toggle` : activer/désactiver le mode période
+- `PATCH /api/periodes/:id/selectionner` : sélectionner une période historique
+
+Les endpoints dashboard existants acceptent désormais `periode_id` pour les données de période :
+- `GET /api/ventes/dashboard?periode_id=...`
+- `GET /api/ventes/revenus?periode_id=...`
+- `GET /api/ventes/journalier?periode_id=...`
+- `GET /api/pertes/stats?periode_id=...`
+- `GET /api/ventes/demandes?periode_id=...` ou `?mois=YYYY-MM`

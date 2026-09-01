@@ -44,6 +44,7 @@ app.use('/api/ventes', require('./routes/ventes'));
 app.use('/api/stocks', require('./routes/stocks'));
 app.use('/api/chat', require('./routes/chat'));
 app.use('/api/pertes', require('./routes/pertes'));
+app.use('/api/periodes', require('./routes/periodes'));
 
 app.get('/health', (req, res) => {
   res.json({

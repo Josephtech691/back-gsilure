@@ -52,9 +52,28 @@ const listerPertes = async (req, res) => {
 };
 
 const statsPertes = async (req, res) => {
-  const moisFiltre  = req.query.mois  || new Date().toISOString().slice(0,7);
+  const moisFiltre  = req.query.mois || new Date().toISOString().slice(0,7);
   const anneeFiltre = req.query.annee || new Date().getFullYear();
+  const periodeId = req.query.periode_id;
   try {
+    if (periodeId) {
+      const pr = await db.query('SELECT * FROM periodes_dashboard WHERE id = $1', [periodeId]);
+      if (!pr.rows.length) return res.status(404).json({ message: 'Période introuvable.' });
+      const p = pr.rows[0];
+      const fin = p.date_fin || new Date().toISOString().split('T')[0];
+      const r = await db.query(`
+        SELECT COALESCE(SUM(kg_perdus),0) AS kg,
+               COALESCE(SUM(kg_perdus)*${PRIX_KG},0) AS val
+        FROM pertes_stock
+        WHERE created_at::date BETWEEN $1::date AND $2::date`, [p.date_debut, fin]);
+      return res.json({
+        periode: { id: p.id, date_debut: p.date_debut, date_fin: p.date_fin, commentaire: p.commentaire },
+        mois: { kg_perdus: parseFloat(r.rows[0].kg), valeur_perdue: parseFloat(r.rows[0].val), periode_id: p.id },
+        annee: null,
+        par_type: [],
+      });
+    }
+
     const [pm, pa, pt] = await Promise.all([
       db.query(`SELECT COALESCE(SUM(kg_perdus),0) AS kg, COALESCE(SUM(kg_perdus)*${PRIX_KG},0) AS val FROM pertes_stock WHERE mois=$1`, [moisFiltre]),
       db.query(`SELECT COALESCE(SUM(kg_perdus),0) AS kg, COALESCE(SUM(kg_perdus)*${PRIX_KG},0) AS val FROM pertes_stock WHERE annee=$1`, [anneeFiltre]),
@@ -65,9 +84,8 @@ const statsPertes = async (req, res) => {
       annee: { kg_perdus: parseFloat(pa.rows[0].kg), valeur_perdue: parseFloat(pa.rows[0].val), annee_filtre: anneeFiltre },
       par_type: pt.rows,
     });
-  } catch (err) { res.status(500).json({ message: 'Erreur serveur.' }); }
+  } catch (err) { console.error('statsPertes:', err); res.status(500).json({ message: 'Erreur serveur.' }); }
 };
-
 const supprimerPerte = async (req, res) => {
   try {
     const r = await db.query('DELETE FROM pertes_stock WHERE id=$1 RETURNING id', [req.params.id]);

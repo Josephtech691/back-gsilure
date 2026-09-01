@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { getConfig: getPeriodeConfig } = require('./periodeController');
 const PRIX_KG = 2500;
 
 const today = () => new Date().toISOString().split('T')[0];
@@ -408,11 +409,23 @@ total_kg_restant: stock.rows.reduce((s,r) => s+parseFloat(r.total_kg||0), 0) - p
 
 // ─── DASHBOARD ADMIN ─────────────────────────────────────────
 const dashboard = async (req, res) => {
-  const { date, employe_id, mois } = req.query;
+  const { date, employe_id, mois, periode_id } = req.query;
   const dateFiltre = date || today();
   const moisFiltre = mois || dateFiltre.slice(0, 7);
 
   try {
+    const config = await getPeriodeConfig();
+    let periode = null;
+
+    if (config.periode_active) {
+      const id = periode_id ? Number(periode_id) : config.periode?.id;
+      if (id) {
+        const pr = await db.query('SELECT * FROM periodes_dashboard WHERE id = $1', [id]);
+        if (pr.rows.length) periode = pr.rows[0];
+      }
+      if (!periode) return res.status(400).json({ message: 'Aucune période valide sélectionnée.' });
+    }
+
     const params = [dateFiltre];
     let empFilter = '';
     if (employe_id) { params.push(employe_id); empFilter = `AND vj.employe_id = $${params.length}`; }
@@ -435,6 +448,8 @@ const dashboard = async (req, res) => {
       nb_clients: acc.nb_clients + parseInt(r.nb_clients),
     }), { kg_vendus: 0, ca_total: 0, nb_clients: 0 });
 
+    // La caisse principale reste cumulée comme avant. Les champs prefixed
+    // "periode_" servent uniquement aux mini-données affichées sous chaque caisse.
     const casse = await db.query(`
       SELECT u.id AS employe_id, u.nom || ' ' || u.prenom AS employe_nom,
              COALESCE(SUM(cv.montant_recu), 0) AS total_encaisse_ventes,
@@ -444,12 +459,27 @@ const dashboard = async (req, res) => {
              (SELECT COALESCE(SUM(mc.montant), 0) FROM mouvements_caisse mc
               WHERE mc.employe_id = u.id AND mc.statut = 'approuvee' AND mc.type = 'retrait') AS total_retraits,
              (SELECT COALESCE(SUM(e.montant), 0) FROM encaissements e
-              WHERE e.employe_id = u.id AND e.statut = 'approuvee') AS total_verse_patron
+              WHERE e.employe_id = u.id AND e.statut = 'approuvee') AS total_verse_patron,
+             ${periode ? `
+             (SELECT COALESCE(SUM(cv2.kg_achetes) * 2500, 0)
+              FROM ventes_journees vj2 JOIN clients_vente cv2 ON cv2.journee_id = vj2.id
+              WHERE vj2.employe_id = u.id AND vj2.date_vente >= $1::date AND vj2.date_vente <= $2::date) AS periode_theorique,
+             (SELECT COALESCE(SUM(mc2.montant), 0) FROM mouvements_caisse mc2
+              WHERE mc2.employe_id = u.id AND mc2.statut = 'approuvee' AND mc2.type = 'ajout'
+                AND mc2.created_at::date >= $1::date AND mc2.created_at::date <= $2::date) AS periode_ajouts,
+             (SELECT COALESCE(SUM(mc3.montant), 0) FROM mouvements_caisse mc3
+              WHERE mc3.employe_id = u.id AND mc3.statut = 'approuvee' AND mc3.type = 'retrait'
+                AND mc3.created_at::date >= $1::date AND mc3.created_at::date <= $2::date) AS periode_retraits,
+             (SELECT COALESCE(SUM(e2.montant), 0) FROM encaissements e2
+              WHERE e2.employe_id = u.id AND e2.statut = 'approuvee'
+                AND e2.created_at::date >= $1::date AND e2.created_at::date <= $2::date)
+                AS periode_verse_patron
+             ` : `0 AS periode_theorique, 0 AS periode_ajouts, 0 AS periode_retraits, 0 AS periode_verse_patron`}
       FROM users u
       LEFT JOIN ventes_journees vj ON vj.employe_id = u.id
       LEFT JOIN clients_vente cv ON cv.journee_id = vj.id
       WHERE u.role = 'employee' AND u.actif = TRUE
-      GROUP BY u.id, u.nom, u.prenom ORDER BY u.nom`);
+      GROUP BY u.id, u.nom, u.prenom ORDER BY u.nom`, periode ? [periode.date_debut, periode.date_fin || dateFiltre] : []);
 
     const encaissMois = await db.query(
       `SELECT COALESCE(SUM(montant), 0) AS total FROM encaissements WHERE statut = 'approuvee' AND mois = $1`,
@@ -459,11 +489,50 @@ const dashboard = async (req, res) => {
       `SELECT COALESCE(SUM(montant), 0) AS total FROM encaissements WHERE statut = 'approuvee'`
     );
 
-    const stock = await db.query(`
-      SELECT COALESCE(SUM(quantite_kg), 0) AS total_achete,
-       (SELECT COALESCE(SUM(kg_achetes), 0) FROM clients_vente) AS total_vendu,
-       (SELECT COALESCE(SUM(kg_perdus), 0) FROM pertes_stock) AS total_kg_perdu
-FROM stocks`);
+    let stock;
+    if (periode) {
+      // Le stock de départ est le stock réel à la fin de la veille du début de période.
+      const stockDebut = await db.query(`
+        SELECT
+          GREATEST(0,
+            COALESCE((SELECT SUM(s.quantite_kg) FROM stocks s WHERE s.date_depot < $1::date), 0)
+            - COALESCE((SELECT SUM(cv.kg_achetes) FROM ventes_journees vj JOIN clients_vente cv ON cv.journee_id = vj.id WHERE vj.date_vente < $1::date), 0)
+            - COALESCE((SELECT SUM(p.kg_perdus) FROM pertes_stock p WHERE p.created_at::date < $1::date), 0)
+          ) AS kg_restant_avant
+      `, [periode.date_debut]);
+
+      const stockPeriode = await db.query(`
+        SELECT
+          COALESCE((SELECT SUM(s.quantite_kg) FROM stocks s WHERE s.date_depot >= $1::date AND s.date_depot <= $2::date), 0) AS kg_ajoutes,
+          COALESCE((SELECT SUM(cv.kg_achetes) FROM ventes_journees vj JOIN clients_vente cv ON cv.journee_id = vj.id WHERE vj.date_vente >= $1::date AND vj.date_vente <= $2::date), 0) AS kg_vendus,
+          COALESCE((SELECT SUM(p.kg_perdus) FROM pertes_stock p WHERE p.created_at::date >= $1::date AND p.created_at::date <= $2::date), 0) AS kg_perdus
+      `, [periode.date_debut, periode.date_fin || today()]);
+
+      const debut = parseFloat(stockDebut.rows[0].kg_restant_avant || 0);
+      const ajoute = parseFloat(stockPeriode.rows[0].kg_ajoutes || 0);
+      const vendu = parseFloat(stockPeriode.rows[0].kg_vendus || 0);
+      const perdu = parseFloat(stockPeriode.rows[0].kg_perdus || 0);
+      stock = {
+        total_kg_achete: debut + ajoute,
+        total_kg_vendu: vendu + perdu,
+        total_kg_perdu: perdu,
+        kg_stock_avant_periode: debut,
+        kg_ajoutes_periode: ajoute,
+        reste_kg: debut + ajoute - vendu - perdu,
+      };
+    } else {
+      const r = await db.query(`
+        SELECT COALESCE(SUM(s.quantite_kg), 0) AS total_achete,
+         (SELECT COALESCE(SUM(kg_achetes), 0) FROM clients_vente) AS total_vendu,
+         (SELECT COALESCE(SUM(kg_perdus), 0) FROM pertes_stock) AS total_kg_perdu
+        FROM stocks s`);
+      stock = {
+        total_kg_achete: parseFloat(r.rows[0].total_achete),
+        total_kg_vendu: parseFloat(r.rows[0].total_vendu),
+        total_kg_perdu: parseFloat(r.rows[0].total_kg_perdu),
+        reste_kg: parseFloat(r.rows[0].total_achete) - parseFloat(r.rows[0].total_vendu) - parseFloat(r.rows[0].total_kg_perdu),
+      };
+    }
 
     const clientsDuJour = await db.query(`
       SELECT cv.*, u.nom || ' ' || u.prenom AS employe_nom
@@ -473,43 +542,43 @@ FROM stocks`);
       WHERE vj.date_vente = $1 ${empFilter}
       ORDER BY vj.employe_id, cv.numero_client`, params);
 
-    const demandesEnAttente = await db.query(
-      `SELECT COUNT(*) AS nb FROM demandes WHERE statut = 'en_attente'`
-    );
+    const demandesEnAttente = await db.query(`SELECT COUNT(*) AS nb FROM demandes WHERE statut = 'en_attente'`);
 
-    const totauxMois = await db.query(`
-SELECT
-    COALESCE(SUM(CASE WHEN type='retrait' THEN montant END),0) AS retraits,
-    COALESCE(SUM(CASE WHEN type='ajout' THEN montant END),0) AS ajouts
-FROM mouvements_caisse
-WHERE statut='approuvee'
-AND mois=$1
-`, [moisFiltre]);
+    const caissePeriodStart = periode?.date_debut;
+    const caissePeriodEnd = periode?.date_fin || today();
+    let totauxMois, encaissementsMois;
+    if (periode) {
+      totauxMois = await db.query(`
+        SELECT COALESCE(SUM(CASE WHEN type='retrait' THEN montant END),0) AS retraits,
+               COALESCE(SUM(CASE WHEN type='ajout' THEN montant END),0) AS ajouts
+        FROM mouvements_caisse WHERE statut='approuvee' AND created_at::date >= $1::date AND created_at::date <= $2::date`, [caissePeriodStart, caissePeriodEnd]);
+      encaissementsMois = await db.query(`
+        SELECT COALESCE(SUM(montant),0) AS encaissements
+        FROM encaissements WHERE statut='approuvee' AND created_at::date >= $1::date AND created_at::date <= $2::date`, [caissePeriodStart, caissePeriodEnd]);
+    } else {
+      totauxMois = await db.query(`
+        SELECT COALESCE(SUM(CASE WHEN type='retrait' THEN montant END),0) AS retraits,
+               COALESCE(SUM(CASE WHEN type='ajout' THEN montant END),0) AS ajouts
+        FROM mouvements_caisse WHERE statut='approuvee' AND mois=$1`, [moisFiltre]);
+      encaissementsMois = await db.query(`SELECT COALESCE(SUM(montant),0) AS encaissements FROM encaissements WHERE statut='approuvee' AND mois=$1`, [moisFiltre]);
+    }
 
-const encaissementsMois = await db.query(`
-SELECT COALESCE(SUM(montant),0) AS encaissements
-FROM encaissements
-WHERE statut='approuvee'
-AND mois=$1
-`, [moisFiltre]);
-
-const retraitsTotal = await db.query(`
-SELECT
-    COALESCE(SUM(CASE WHEN type='retrait' THEN montant END),0) AS retraits,
-    COALESCE(SUM(CASE WHEN type='ajout' THEN montant END),0) AS ajouts
-FROM mouvements_caisse
-WHERE statut='approuvee'
-`);
-
-const encaissementsTotal = await db.query(`
-SELECT COALESCE(SUM(montant),0) AS encaissements
-FROM encaissements
-WHERE statut='approuvee'
-`);
+    const retraitsTotal = await db.query(`
+      SELECT COALESCE(SUM(CASE WHEN type='retrait' THEN montant END),0) AS retraits,
+             COALESCE(SUM(CASE WHEN type='ajout' THEN montant END),0) AS ajouts
+      FROM mouvements_caisse WHERE statut='approuvee'`);
+    const encaissementsTotal = await db.query(`SELECT COALESCE(SUM(montant),0) AS encaissements FROM encaissements WHERE statut='approuvee'`);
 
     res.json({
       date: dateFiltre,
       mois: moisFiltre,
+      periode_active: Boolean(periode),
+      periode: periode ? {
+        id: periode.id,
+        date_debut: periode.date_debut,
+        date_fin: periode.date_fin,
+        commentaire: periode.commentaire,
+      } : null,
       stats_par_employe: statsJour.rows,
       totaux_jour: totauxJour,
       casse_employes: casse.rows,
@@ -519,22 +588,16 @@ WHERE statut='approuvee'
         mois_filtre: moisFiltre,
       },
       totaux_mois: {
-    retraits: parseFloat(totauxMois.rows[0].retraits),
-    ajouts: parseFloat(totauxMois.rows[0].ajouts),
-    encaissements: parseFloat(encaissementsMois.rows[0].encaissements),
-},
-
-caisse_cumulee: {
-    retraits: parseFloat(retraitsTotal.rows[0].retraits),
-    ajouts: parseFloat(retraitsTotal.rows[0].ajouts),
-    encaissements: parseFloat(encaissementsTotal.rows[0].encaissements),
-},
-      stock: {
-        total_kg_achete: parseFloat(stock.rows[0].total_achete),
-        total_kg_vendu: parseFloat(stock.rows[0].total_vendu),
-       total_kg_perdu: parseFloat(stock.rows[0].total_kg_perdu),
-reste_kg: parseFloat(stock.rows[0].total_achete) - parseFloat(stock.rows[0].total_vendu) - parseFloat(stock.rows[0].total_kg_perdu),
+        retraits: parseFloat(totauxMois.rows[0].retraits),
+        ajouts: parseFloat(totauxMois.rows[0].ajouts),
+        encaissements: parseFloat(encaissementsMois.rows[0].encaissements),
       },
+      caisse_cumulee: {
+        retraits: parseFloat(retraitsTotal.rows[0].retraits),
+        ajouts: parseFloat(retraitsTotal.rows[0].ajouts),
+        encaissements: parseFloat(encaissementsTotal.rows[0].encaissements),
+      },
+      stock,
       clients_du_jour: clientsDuJour.rows,
       nb_demandes_attente: parseInt(demandesEnAttente.rows[0].nb),
     });
@@ -546,17 +609,23 @@ reste_kg: parseFloat(stock.rows[0].total_achete) - parseFloat(stock.rows[0].tota
 
 // ─── DEMANDES UNIFIÉES ───────────────────────────────────────
 const listerDemandes = async (req, res) => {
-  const { statut, type } = req.query;
+  const { statut, type, periode_id, mois } = req.query;
   try {
     let q = `SELECT d.*, u.nom || ' ' || u.prenom AS employe_nom, u.email AS employe_email, u.photo_url
              FROM demandes d JOIN users u ON d.employe_id = u.id WHERE 1=1`;
     const params = [];
     if (statut) { params.push(statut); q += ` AND d.statut = $${params.length}`; }
     if (type)   { params.push(type);   q += ` AND d.type = $${params.length}`; }
+    if (periode_id) {
+      params.push(periode_id);
+      q += ` AND d.created_at::date BETWEEN (SELECT date_debut FROM periodes_dashboard WHERE id = $${params.length})
+             AND COALESCE((SELECT date_fin FROM periodes_dashboard WHERE id = $${params.length}), CURRENT_DATE)`;
+    }
+    if (mois) { params.push(mois); q += ` AND TO_CHAR(d.created_at, 'YYYY-MM') = $${params.length}`; }
     q += ' ORDER BY d.created_at DESC';
     const r = await db.query(q, params);
     res.json(r.rows);
-  } catch (err) { res.status(500).json({ message: 'Erreur serveur.' }); }
+  } catch (err) { console.error('listerDemandes:', err); res.status(500).json({ message: 'Erreur serveur.' }); }
 };
 
 const traiterDemande = async (req, res) => {
@@ -649,59 +718,87 @@ const demanderModification = async (req, res) => {
   }
 };
 
-// ─── REVENUS (admin) ─────────────────────────────────────────
+// ─── REVENUS / VENTES PÉRIODE (admin) ─────────────────────────
+const resolvePeriodeForQuery = async (periode_id) => {
+  if (!periode_id) return null;
+  const r = await db.query('SELECT * FROM periodes_dashboard WHERE id = $1', [periode_id]);
+  return r.rows[0] || null;
+};
+
 const revenusVentes = async (req, res) => {
-  const { mois, annee, type_stock } = req.query;
-  const moisFiltre = mois || new Date().toISOString().slice(0, 7);
-  const anneeFiltre = annee || new Date().getFullYear();
-
+  const { mois, annee, type_stock, periode_id } = req.query;
   try {
-    const revenuMois = await db.query(`
-      SELECT COALESCE(SUM(cv.montant_recu), 0) AS total
-      FROM ventes_journees vj LEFT JOIN clients_vente cv ON cv.journee_id = vj.id
-      WHERE TO_CHAR(vj.date_vente, 'YYYY-MM') = $1`, [moisFiltre]
-    );
-
-    const revenuAnnee = await db.query(`
-      SELECT COALESCE(SUM(cv.montant_recu), 0) AS total
-      FROM ventes_journees vj LEFT JOIN clients_vente cv ON cv.journee_id = vj.id
-      WHERE EXTRACT(YEAR FROM vj.date_vente) = $1`, [anneeFiltre]
-    );
-
+    const periode = await resolvePeriodeForQuery(periode_id);
+    let revenuMois = 0;
+    let revenuAnnee = 0;
     let revenuStock = 0;
-    if (type_stock) {
-      const r = await db.query(
-        `SELECT COALESCE(SUM(montant_recu), 0) AS total FROM clients_vente WHERE type_stock = $1`,
-        [type_stock]
-      );
-      revenuStock = parseFloat(r.rows[0].total);
+
+    if (periode) {
+      const fin = periode.date_fin || today();
+      const r = await db.query(`
+        SELECT COALESCE(SUM(cv.montant_recu),0) AS total
+        FROM ventes_journees vj JOIN clients_vente cv ON cv.journee_id = vj.id
+        WHERE vj.date_vente BETWEEN $1::date AND $2::date`, [periode.date_debut, fin]);
+      revenuMois = parseFloat(r.rows[0].total);
+      if (type_stock) {
+        const rs = await db.query(`
+          SELECT COALESCE(SUM(cv.montant_recu),0) AS total
+          FROM ventes_journees vj JOIN clients_vente cv ON cv.journee_id = vj.id
+          WHERE cv.type_stock = $1 AND vj.date_vente BETWEEN $2::date AND $3::date`, [type_stock, periode.date_debut, fin]);
+        revenuStock = parseFloat(rs.rows[0].total);
+      }
+    } else {
+      const moisFiltre = mois || new Date().toISOString().slice(0, 7);
+      const anneeFiltre = annee || new Date().getFullYear();
+      const rm = await db.query(`
+        SELECT COALESCE(SUM(cv.montant_recu),0) AS total
+        FROM ventes_journees vj LEFT JOIN clients_vente cv ON cv.journee_id = vj.id
+        WHERE TO_CHAR(vj.date_vente,'YYYY-MM') = $1`, [moisFiltre]);
+      const ra = await db.query(`
+        SELECT COALESCE(SUM(cv.montant_recu),0) AS total
+        FROM ventes_journees vj LEFT JOIN clients_vente cv ON cv.journee_id = vj.id
+        WHERE EXTRACT(YEAR FROM vj.date_vente) = $1`, [anneeFiltre]);
+      revenuMois = parseFloat(rm.rows[0].total);
+      revenuAnnee = parseFloat(ra.rows[0].total);
+      if (type_stock) {
+        const rs = await db.query(`SELECT COALESCE(SUM(montant_recu),0) AS total FROM clients_vente WHERE type_stock = $1`, [type_stock]);
+        revenuStock = parseFloat(rs.rows[0].total);
+      }
     }
 
-    res.json({
-      mois: parseFloat(revenuMois.rows[0].total),
-      annee: parseFloat(revenuAnnee.rows[0].total),
-      stock: revenuStock,
-    });
+    res.json({ mois: revenuMois, annee: revenuAnnee, stock: revenuStock, periode: periode || null });
   } catch (err) {
     console.error('revenusVentes:', err);
     res.status(500).json({ message: 'Erreur serveur.' });
   }
 };
 
-// ─── VENTES JOURNALIER (admin) ───────────────────────────────
 const ventesJournalier = async (req, res) => {
-  const moisFiltre = req.query.mois || new Date().toISOString().slice(0, 7);
+  const { mois, periode_id } = req.query;
   try {
-    const r = await db.query(`
-      SELECT vj.date_vente::TEXT AS date,
-             COUNT(cv.id) AS nb_clients,
-             COALESCE(SUM(cv.kg_achetes), 0) AS kg_total,
-             COALESCE(SUM(cv.montant_recu), 0) AS montant_encaisse
-      FROM ventes_journees vj
-      LEFT JOIN clients_vente cv ON cv.journee_id = vj.id
-      WHERE TO_CHAR(vj.date_vente, 'YYYY-MM') = $1
-      GROUP BY vj.date_vente ORDER BY vj.date_vente DESC`, [moisFiltre]
-    );
+    const periode = await resolvePeriodeForQuery(periode_id);
+    let r;
+    if (periode) {
+      const fin = periode.date_fin || today();
+      r = await db.query(`
+        SELECT vj.date_vente::TEXT AS date,
+               COUNT(cv.id) AS nb_clients,
+               COALESCE(SUM(cv.kg_achetes),0) AS kg_total,
+               COALESCE(SUM(cv.montant_recu),0) AS montant_encaisse
+        FROM ventes_journees vj LEFT JOIN clients_vente cv ON cv.journee_id = vj.id
+        WHERE vj.date_vente BETWEEN $1::date AND $2::date
+        GROUP BY vj.date_vente ORDER BY vj.date_vente DESC`, [periode.date_debut, fin]);
+    } else {
+      const moisFiltre = mois || new Date().toISOString().slice(0,7);
+      r = await db.query(`
+        SELECT vj.date_vente::TEXT AS date,
+               COUNT(cv.id) AS nb_clients,
+               COALESCE(SUM(cv.kg_achetes),0) AS kg_total,
+               COALESCE(SUM(cv.montant_recu),0) AS montant_encaisse
+        FROM ventes_journees vj LEFT JOIN clients_vente cv ON cv.journee_id = vj.id
+        WHERE TO_CHAR(vj.date_vente,'YYYY-MM') = $1
+        GROUP BY vj.date_vente ORDER BY vj.date_vente DESC`, [moisFiltre]);
+    }
     res.json(r.rows);
   } catch (err) {
     console.error('ventesJournalier:', err);
