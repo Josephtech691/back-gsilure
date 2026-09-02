@@ -3,7 +3,7 @@ const db = require('../config/db');
 const PRIX_KG = 2500;
 
 const declarerPerte = async (req, res) => {
-  const { type_perte, stock_id, type_stock, poids_categorie, bac_numero, kg_perdus, commentaire } = req.body;
+  const { type_perte, stock_id, type_stock, poids_categorie, bac_numero, kg_perdus, commentaire, date_perte } = req.body;
 
   if (!['perte_poids', 'mort'].includes(type_perte))
     return res.status(400).json({ message: 'type_perte invalide.' });
@@ -13,16 +13,16 @@ const declarerPerte = async (req, res) => {
     return res.status(400).json({ message: 'type_stock requis.' });
 
   try {
-    const now = new Date();
-    const mois = now.toISOString().slice(0, 7);
-    const annee = now.getFullYear();
+    const dPerte = date_perte || new Date().toISOString().split('T')[0];
+    const mois = dPerte.slice(0, 7);
+    const annee = parseInt(dPerte.slice(0, 4), 10);
 
     const r = await db.query(
       `INSERT INTO pertes_stock
-         (type_perte, stock_id, type_stock, poids_categorie, bac_numero, kg_perdus, commentaire, declare_par, mois, annee)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+         (type_perte, stock_id, type_stock, poids_categorie, bac_numero, kg_perdus, commentaire, declare_par, mois, annee, date_perte)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
       [type_perte, stock_id||null, type_stock, poids_categorie||null,
-       bac_numero||null, kg_perdus, commentaire||null, req.user.id, mois, annee]
+       bac_numero||null, kg_perdus, commentaire||null, req.user.id, mois, annee, dPerte]
     );
     res.status(201).json({
       message: `Perte de ${kg_perdus} kg déclarée.`,
@@ -65,7 +65,7 @@ const statsPertes = async (req, res) => {
         SELECT COALESCE(SUM(kg_perdus),0) AS kg,
                COALESCE(SUM(kg_perdus)*${PRIX_KG},0) AS val
         FROM pertes_stock
-        WHERE created_at::date BETWEEN $1::date AND $2::date`, [p.date_debut, fin]);
+        WHERE date_perte BETWEEN $1::date AND $2::date`, [p.date_debut, fin]);
       return res.json({
         periode: { id: p.id, date_debut: p.date_debut, date_fin: p.date_fin, commentaire: p.commentaire },
         mois: { kg_perdus: parseFloat(r.rows[0].kg), valeur_perdue: parseFloat(r.rows[0].val), periode_id: p.id },

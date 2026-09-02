@@ -465,6 +465,9 @@ const dashboard = async (req, res) => {
              (SELECT COALESCE(SUM(cv2.kg_achetes) * 2500, 0)
               FROM ventes_journees vj2 JOIN clients_vente cv2 ON cv2.journee_id = vj2.id
               WHERE vj2.employe_id = u.id AND vj2.date_vente >= $1::date AND vj2.date_vente <= $2::date) AS periode_theorique,
+             (SELECT COALESCE(SUM(cv2b.montant_recu), 0)
+              FROM ventes_journees vj2b JOIN clients_vente cv2b ON cv2b.journee_id = vj2b.id
+              WHERE vj2b.employe_id = u.id AND vj2b.date_vente >= $1::date AND vj2b.date_vente <= $2::date) AS periode_encaisse,
              (SELECT COALESCE(SUM(mc2.montant), 0) FROM mouvements_caisse mc2
               WHERE mc2.employe_id = u.id AND mc2.statut = 'approuvee' AND mc2.type = 'ajout'
                 AND mc2.created_at::date >= $1::date AND mc2.created_at::date <= $2::date) AS periode_ajouts,
@@ -474,8 +477,18 @@ const dashboard = async (req, res) => {
              (SELECT COALESCE(SUM(e2.montant), 0) FROM encaissements e2
               WHERE e2.employe_id = u.id AND e2.statut = 'approuvee'
                 AND e2.created_at::date >= $1::date AND e2.created_at::date <= $2::date)
-                AS periode_verse_patron
-             ` : `0 AS periode_theorique, 0 AS periode_ajouts, 0 AS periode_retraits, 0 AS periode_verse_patron`}
+                AS periode_verse_patron,
+             (SELECT GREATEST(0,
+                COALESCE((SELECT SUM(cv3.montant_recu) FROM ventes_journees vj3 JOIN clients_vente cv3 ON cv3.journee_id = vj3.id
+                          WHERE vj3.employe_id = u.id AND vj3.date_vente < $1::date), 0)
+                + COALESCE((SELECT SUM(mc4.montant) FROM mouvements_caisse mc4
+                          WHERE mc4.employe_id = u.id AND mc4.statut = 'approuvee' AND mc4.type = 'ajout' AND mc4.created_at::date < $1::date), 0)
+                - COALESCE((SELECT SUM(mc5.montant) FROM mouvements_caisse mc5
+                          WHERE mc5.employe_id = u.id AND mc5.statut = 'approuvee' AND mc5.type = 'retrait' AND mc5.created_at::date < $1::date), 0)
+                - COALESCE((SELECT SUM(e3.montant) FROM encaissements e3
+                          WHERE e3.employe_id = u.id AND e3.statut = 'approuvee' AND e3.created_at::date < $1::date), 0)
+              )) AS caisse_debut_periode
+             ` : `0 AS periode_theorique, 0 AS periode_encaisse, 0 AS periode_ajouts, 0 AS periode_retraits, 0 AS periode_verse_patron, 0 AS caisse_debut_periode`}
       FROM users u
       LEFT JOIN ventes_journees vj ON vj.employe_id = u.id
       LEFT JOIN clients_vente cv ON cv.journee_id = vj.id
@@ -498,7 +511,7 @@ const dashboard = async (req, res) => {
           GREATEST(0,
             COALESCE((SELECT SUM(s.quantite_kg) FROM stocks s WHERE s.date_depot < $1::date), 0)
             - COALESCE((SELECT SUM(cv.kg_achetes) FROM ventes_journees vj JOIN clients_vente cv ON cv.journee_id = vj.id WHERE vj.date_vente < $1::date), 0)
-            - COALESCE((SELECT SUM(p.kg_perdus) FROM pertes_stock p WHERE p.created_at::date < $1::date), 0)
+            - COALESCE((SELECT SUM(p.kg_perdus) FROM pertes_stock p WHERE p.date_perte < $1::date), 0)
           ) AS kg_restant_avant
       `, [periode.date_debut]);
 
@@ -506,7 +519,7 @@ const dashboard = async (req, res) => {
         SELECT
           COALESCE((SELECT SUM(s.quantite_kg) FROM stocks s WHERE s.date_depot >= $1::date AND s.date_depot <= $2::date), 0) AS kg_ajoutes,
           COALESCE((SELECT SUM(cv.kg_achetes) FROM ventes_journees vj JOIN clients_vente cv ON cv.journee_id = vj.id WHERE vj.date_vente >= $1::date AND vj.date_vente <= $2::date), 0) AS kg_vendus,
-          COALESCE((SELECT SUM(p.kg_perdus) FROM pertes_stock p WHERE p.created_at::date >= $1::date AND p.created_at::date <= $2::date), 0) AS kg_perdus
+          COALESCE((SELECT SUM(p.kg_perdus) FROM pertes_stock p WHERE p.date_perte >= $1::date AND p.date_perte <= $2::date), 0) AS kg_perdus
       `, [periode.date_debut, periode.date_fin || today()]);
 
       const debut = parseFloat(stockDebut.rows[0].kg_restant_avant || 0);
