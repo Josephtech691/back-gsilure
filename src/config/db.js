@@ -3,9 +3,10 @@ const { Pool } = require('pg');
 let connectionString = process.env.DATABASE_URL || '';
 
 connectionString = connectionString
-  .replace('&channel_binding=require', '')
-  .replace('?channel_binding=require&', '?')
-  .replace('?channel_binding=require', '');
+  .replace(/([?&])sslmode=[^&]*&?/i, '$1')
+  .replace(/([?&])channel_binding=[^&]*&?/i, '$1')
+  .replace(/[?&]$/, '')
+  .replace('?&', '?');
 
 if (!connectionString) {
   console.warn('DATABASE_URL est absente.');

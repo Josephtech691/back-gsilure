@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { validate: isUuid } = require('uuid');
 const { getConfig: getPeriodeConfig } = require('./periodeController');
 const PRIX_KG = 2500;
 
@@ -418,9 +419,9 @@ const dashboard = async (req, res) => {
     let periode = null;
 
     if (config.periode_active) {
-      const id = periode_id ? Number(periode_id) : config.periode?.id;
-      if (id) {
-        const pr = await db.query('SELECT * FROM periodes_dashboard WHERE id = $1', [id]);
+      const id = periode_id || config.periode?.id;
+      if (id && isUuid(String(id))) {
+        const pr = await db.query('SELECT * FROM periodes_dashboard WHERE id = $1', [String(id)]);
         if (pr.rows.length) periode = pr.rows[0];
       }
       if (!periode) return res.status(400).json({ message: 'Aucune période valide sélectionnée.' });

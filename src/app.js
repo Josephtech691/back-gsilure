@@ -46,6 +46,10 @@ app.use('/api/chat', require('./routes/chat'));
 app.use('/api/pertes', require('./routes/pertes'));
 app.use('/api/periodes', require('./routes/periodes'));
 
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', service: 'poissonnerie-backend', health: '/health' });
+});
+
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',

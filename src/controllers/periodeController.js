@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { validate: isUuid } = require('uuid');
 
 const today = () => new Date().toISOString().split('T')[0];
 
@@ -124,8 +125,8 @@ const activerDesactiverPeriode = async (req, res) => {
 };
 
 const selectionnerPeriode = async (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isInteger(id)) return res.status(400).json({ message: 'Identifiant de période invalide.' });
+  const id = String(req.params.id || '');
+  if (!isUuid(id)) return res.status(400).json({ message: 'Identifiant de période invalide.' });
 
   try {
     const p = await db.query('SELECT * FROM periodes_dashboard WHERE id = $1', [id]);
