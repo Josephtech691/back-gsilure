@@ -480,7 +480,7 @@ const dashboard = async (req, res) => {
       LEFT JOIN ventes_journees vj ON vj.employe_id = u.id
       LEFT JOIN clients_vente cv ON cv.journee_id = vj.id
       WHERE u.role = 'employee' AND u.actif = TRUE
-      GROUP BY u.id, u.nom, u.prenom ORDER BY u.nom`, periode ? [periode.date_debut, periode.date_fin || dateFiltre] : []);
+      GROUP BY u.id, u.nom, u.prenom ORDER BY u.nom`, periode ? [periode.date_debut, periode.date_fin || today()] : []);
 
     const encaissMois = await db.query(
       `SELECT COALESCE(SUM(montant), 0) AS total FROM encaissements WHERE statut = 'approuvee' AND mois = $1`,
