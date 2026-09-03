@@ -748,14 +748,18 @@ const revenusVentes = async (req, res) => {
     let revenuMois = 0;
     let revenuAnnee = 0;
     let revenuStock = 0;
+    let theoriqueMois = 0;
+    let theoriqueAnnee = 0;
 
     if (periode) {
       const fin = periode.date_fin || today();
       const r = await db.query(`
-        SELECT COALESCE(SUM(cv.montant_recu),0) AS total
+        SELECT COALESCE(SUM(cv.montant_recu),0) AS total,
+               COALESCE(SUM(cv.kg_achetes)*${PRIX_KG},0) AS theorique
         FROM ventes_journees vj JOIN clients_vente cv ON cv.journee_id = vj.id
         WHERE vj.date_vente BETWEEN $1::date AND $2::date`, [periode.date_debut, fin]);
       revenuMois = parseFloat(r.rows[0].total);
+      theoriqueMois = parseFloat(r.rows[0].theorique);
       if (type_stock) {
         const rs = await db.query(`
           SELECT COALESCE(SUM(cv.montant_recu),0) AS total
@@ -767,22 +771,30 @@ const revenusVentes = async (req, res) => {
       const moisFiltre = mois || new Date().toISOString().slice(0, 7);
       const anneeFiltre = annee || new Date().getFullYear();
       const rm = await db.query(`
-        SELECT COALESCE(SUM(cv.montant_recu),0) AS total
+        SELECT COALESCE(SUM(cv.montant_recu),0) AS total,
+               COALESCE(SUM(cv.kg_achetes)*${PRIX_KG},0) AS theorique
         FROM ventes_journees vj LEFT JOIN clients_vente cv ON cv.journee_id = vj.id
         WHERE TO_CHAR(vj.date_vente,'YYYY-MM') = $1`, [moisFiltre]);
       const ra = await db.query(`
-        SELECT COALESCE(SUM(cv.montant_recu),0) AS total
+        SELECT COALESCE(SUM(cv.montant_recu),0) AS total,
+               COALESCE(SUM(cv.kg_achetes)*${PRIX_KG},0) AS theorique
         FROM ventes_journees vj LEFT JOIN clients_vente cv ON cv.journee_id = vj.id
         WHERE EXTRACT(YEAR FROM vj.date_vente) = $1`, [anneeFiltre]);
       revenuMois = parseFloat(rm.rows[0].total);
+      theoriqueMois = parseFloat(rm.rows[0].theorique);
       revenuAnnee = parseFloat(ra.rows[0].total);
+      theoriqueAnnee = parseFloat(ra.rows[0].theorique);
       if (type_stock) {
         const rs = await db.query(`SELECT COALESCE(SUM(montant_recu),0) AS total FROM clients_vente WHERE type_stock = $1`, [type_stock]);
         revenuStock = parseFloat(rs.rows[0].total);
       }
     }
 
-    res.json({ mois: revenuMois, annee: revenuAnnee, stock: revenuStock, periode: periode || null });
+    res.json({
+      mois: revenuMois, annee: revenuAnnee, stock: revenuStock,
+      theorique_mois: theoriqueMois, theorique_annee: theoriqueAnnee,
+      periode: periode || null,
+    });
   } catch (err) {
     console.error('revenusVentes:', err);
     res.status(500).json({ message: 'Erreur serveur.' });
