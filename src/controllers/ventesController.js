@@ -240,17 +240,18 @@ const demanderAnnulationReste = async (req, res) => {
 
 // ─── MOUVEMENTS CAISSE ───────────────────────────────────────
 const creerMouvementCaisse = async (req, res) => {
-  const { type, montant, commentaire, mois } = req.body;
+  const { type, montant, commentaire, mois, date_mouvement } = req.body;
   if (!['ajout', 'retrait'].includes(type)) return res.status(400).json({ message: 'Type invalide.' });
   if (!montant || isNaN(montant) || Number(montant) <= 0) return res.status(400).json({ message: 'Montant invalide.' });
   if (!commentaire?.trim()) return res.status(400).json({ message: 'Commentaire requis.' });
 
   try {
-    const moisCible = mois || new Date().toISOString().slice(0, 7);
+    const dMouvement = date_mouvement || new Date().toISOString().split('T')[0];
+    const moisCible = mois || dMouvement.slice(0, 7);
     const mc = await db.query(
-      `INSERT INTO mouvements_caisse (employe_id, type, montant, commentaire, mois)
-       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [req.user.id, type, montant, commentaire.trim(), moisCible]
+      `INSERT INTO mouvements_caisse (employe_id, type, montant, commentaire, mois, date_mouvement)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [req.user.id, type, montant, commentaire.trim(), moisCible, dMouvement]
     );
     await db.query(
       `INSERT INTO demandes (employe_id, type, ref_id, ref_table, motif, meta)
@@ -266,15 +267,16 @@ const creerMouvementCaisse = async (req, res) => {
 };
 
 const creerEncaissement = async (req, res) => {
-  const { montant, commentaire, mois } = req.body;
+  const { montant, commentaire, mois, date_encaissement } = req.body;
   if (!montant || isNaN(montant) || Number(montant) <= 0) return res.status(400).json({ message: 'Montant invalide.' });
 
   try {
-    const moisCible = mois || new Date().toISOString().slice(0, 7);
+    const dEncaissement = date_encaissement || new Date().toISOString().split('T')[0];
+    const moisCible = mois || dEncaissement.slice(0, 7);
     const enc = await db.query(
-      `INSERT INTO encaissements (employe_id, montant, commentaire, mois)
-       VALUES ($1,$2,$3,$4) RETURNING *`,
-      [req.user.id, montant, commentaire?.trim() || null, moisCible]
+      `INSERT INTO encaissements (employe_id, montant, commentaire, mois, date_encaissement)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [req.user.id, montant, commentaire?.trim() || null, moisCible, dEncaissement]
     );
     await db.query(
       `INSERT INTO demandes (employe_id, type, ref_id, ref_table, motif, meta)
@@ -470,23 +472,23 @@ const dashboard = async (req, res) => {
               WHERE vj2b.employe_id = u.id AND vj2b.date_vente >= $1::date AND vj2b.date_vente <= $2::date) AS periode_encaisse,
              (SELECT COALESCE(SUM(mc2.montant), 0) FROM mouvements_caisse mc2
               WHERE mc2.employe_id = u.id AND mc2.statut = 'approuvee' AND mc2.type = 'ajout'
-                AND mc2.created_at::date >= $1::date AND mc2.created_at::date <= $2::date) AS periode_ajouts,
+                AND mc2.date_mouvement >= $1::date AND mc2.date_mouvement <= $2::date) AS periode_ajouts,
              (SELECT COALESCE(SUM(mc3.montant), 0) FROM mouvements_caisse mc3
               WHERE mc3.employe_id = u.id AND mc3.statut = 'approuvee' AND mc3.type = 'retrait'
-                AND mc3.created_at::date >= $1::date AND mc3.created_at::date <= $2::date) AS periode_retraits,
+                AND mc3.date_mouvement >= $1::date AND mc3.date_mouvement <= $2::date) AS periode_retraits,
              (SELECT COALESCE(SUM(e2.montant), 0) FROM encaissements e2
               WHERE e2.employe_id = u.id AND e2.statut = 'approuvee'
-                AND e2.created_at::date >= $1::date AND e2.created_at::date <= $2::date)
+                AND e2.date_encaissement >= $1::date AND e2.date_encaissement <= $2::date)
                 AS periode_verse_patron,
              (SELECT GREATEST(0,
                 COALESCE((SELECT SUM(cv3.montant_recu) FROM ventes_journees vj3 JOIN clients_vente cv3 ON cv3.journee_id = vj3.id
                           WHERE vj3.employe_id = u.id AND vj3.date_vente < $1::date), 0)
                 + COALESCE((SELECT SUM(mc4.montant) FROM mouvements_caisse mc4
-                          WHERE mc4.employe_id = u.id AND mc4.statut = 'approuvee' AND mc4.type = 'ajout' AND mc4.created_at::date < $1::date), 0)
+                          WHERE mc4.employe_id = u.id AND mc4.statut = 'approuvee' AND mc4.type = 'ajout' AND mc4.date_mouvement < $1::date), 0)
                 - COALESCE((SELECT SUM(mc5.montant) FROM mouvements_caisse mc5
-                          WHERE mc5.employe_id = u.id AND mc5.statut = 'approuvee' AND mc5.type = 'retrait' AND mc5.created_at::date < $1::date), 0)
+                          WHERE mc5.employe_id = u.id AND mc5.statut = 'approuvee' AND mc5.type = 'retrait' AND mc5.date_mouvement < $1::date), 0)
                 - COALESCE((SELECT SUM(e3.montant) FROM encaissements e3
-                          WHERE e3.employe_id = u.id AND e3.statut = 'approuvee' AND e3.created_at::date < $1::date), 0)
+                          WHERE e3.employe_id = u.id AND e3.statut = 'approuvee' AND e3.date_encaissement < $1::date), 0)
               )) AS caisse_debut_periode
              ` : `0 AS periode_theorique, 0 AS periode_encaisse, 0 AS periode_ajouts, 0 AS periode_retraits, 0 AS periode_verse_patron, 0 AS caisse_debut_periode`}
       FROM users u
@@ -565,10 +567,10 @@ const dashboard = async (req, res) => {
       totauxMois = await db.query(`
         SELECT COALESCE(SUM(CASE WHEN type='retrait' THEN montant END),0) AS retraits,
                COALESCE(SUM(CASE WHEN type='ajout' THEN montant END),0) AS ajouts
-        FROM mouvements_caisse WHERE statut='approuvee' AND created_at::date >= $1::date AND created_at::date <= $2::date`, [caissePeriodStart, caissePeriodEnd]);
+        FROM mouvements_caisse WHERE statut='approuvee' AND date_mouvement >= $1::date AND date_mouvement <= $2::date`, [caissePeriodStart, caissePeriodEnd]);
       encaissementsMois = await db.query(`
         SELECT COALESCE(SUM(montant),0) AS encaissements
-        FROM encaissements WHERE statut='approuvee' AND created_at::date >= $1::date AND created_at::date <= $2::date`, [caissePeriodStart, caissePeriodEnd]);
+        FROM encaissements WHERE statut='approuvee' AND date_encaissement >= $1::date AND date_encaissement <= $2::date`, [caissePeriodStart, caissePeriodEnd]);
     } else {
       totauxMois = await db.query(`
         SELECT COALESCE(SUM(CASE WHEN type='retrait' THEN montant END),0) AS retraits,
@@ -820,9 +822,54 @@ const ventesJournalier = async (req, res) => {
   }
 };
 
+// ─── RESTES CUMULÉS (rabais / montants non perçus) ──────────
+const RESTE_SQL = `COALESCE(SUM(CASE WHEN cv.reste_annule THEN 0
+                    ELSE GREATEST(0, cv.kg_achetes*${PRIX_KG} - cv.montant_recu) END),0)`;
+
+const statsRestes = async (req, res) => {
+  const moisFiltre  = req.query.mois || new Date().toISOString().slice(0, 7);
+  const anneeFiltre = req.query.annee || new Date().getFullYear();
+  const periodeId = req.query.periode_id;
+  try {
+    if (periodeId) {
+      const pr = await db.query('SELECT * FROM periodes_dashboard WHERE id = $1', [periodeId]);
+      if (!pr.rows.length) return res.status(404).json({ message: 'Période introuvable.' });
+      const p = pr.rows[0];
+      const fin = p.date_fin || today();
+      const r = await db.query(`
+        SELECT ${RESTE_SQL} AS reste
+        FROM ventes_journees vj JOIN clients_vente cv ON cv.journee_id = vj.id
+        WHERE vj.date_vente BETWEEN $1::date AND $2::date`, [p.date_debut, fin]);
+      return res.json({
+        periode: { id: p.id, date_debut: p.date_debut, date_fin: p.date_fin },
+        mois: { reste_cumule: parseFloat(r.rows[0].reste), periode_id: p.id },
+        annee: null,
+      });
+    }
+
+    const [rm, ra] = await Promise.all([
+      db.query(`
+        SELECT ${RESTE_SQL} AS reste
+        FROM ventes_journees vj JOIN clients_vente cv ON cv.journee_id = vj.id
+        WHERE TO_CHAR(vj.date_vente, 'YYYY-MM') = $1`, [moisFiltre]),
+      db.query(`
+        SELECT ${RESTE_SQL} AS reste
+        FROM ventes_journees vj JOIN clients_vente cv ON cv.journee_id = vj.id
+        WHERE EXTRACT(YEAR FROM vj.date_vente) = $1`, [anneeFiltre]),
+    ]);
+    res.json({
+      mois:  { reste_cumule: parseFloat(rm.rows[0].reste), mois_filtre: moisFiltre },
+      annee: { reste_cumule: parseFloat(ra.rows[0].reste), annee_filtre: anneeFiltre },
+    });
+  } catch (err) {
+    console.error('statsRestes:', err);
+    res.status(500).json({ message: 'Erreur serveur.' });
+  }
+};
+
 module.exports = {
   getOuCreerJournee, ajouterClient, modifierClient, supprimerClient,
   demanderAnnulationReste, creerMouvementCaisse, creerEncaissement,
   graphiqueEmploye, dashboard, listerDemandes, traiterDemande, demanderModification,
-  revenusVentes, ventesJournalier,
+  revenusVentes, ventesJournalier, statsRestes,
 };

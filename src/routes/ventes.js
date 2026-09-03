@@ -19,5 +19,6 @@ router.post('/demandes-modification', authenticate, ctrl.demanderModification);
 // Il faut ajouter dans ventes.js :
 router.get('/revenus', authenticate, adminOnly, ctrl.revenusVentes);
 router.get('/journalier', authenticate, adminOnly, ctrl.ventesJournalier);
+router.get('/restes/stats', authenticate, adminOnly, ctrl.statsRestes);
 
 module.exports = router;
