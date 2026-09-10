@@ -12,7 +12,8 @@ const normalizeDate = (value) => {
 const getConfig = async () => {
   const r = await db.query(`
     SELECT c.periode_active, c.periode_id,
-           p.date_debut, p.date_fin, p.commentaire, p.created_at
+           p.date_debut, p.date_fin, p.commentaire, p.created_at,
+           p.stock_depart_kg, p.caisse_depart
     FROM dashboard_periode_config c
     LEFT JOIN periodes_dashboard p ON p.id = c.periode_id
     WHERE c.id = 1
@@ -31,6 +32,8 @@ const getConfig = async () => {
       date_fin: row.date_fin,
       commentaire: row.commentaire,
       created_at: row.created_at,
+      stock_depart_kg: row.stock_depart_kg,
+      caisse_depart: row.caisse_depart,
     } : null,
   };
 };
@@ -40,7 +43,8 @@ const listerPeriodes = async (req, res) => {
     const [periodes, config] = await Promise.all([
       db.query(`
         SELECT p.id, p.date_debut, p.date_fin, p.commentaire, p.created_at,
-               p.created_by, u.nom || ' ' || u.prenom AS cree_par
+               p.created_by, u.nom || ' ' || u.prenom AS cree_par,
+               p.stock_depart_kg, p.caisse_depart
         FROM periodes_dashboard p
         LEFT JOIN users u ON u.id = p.created_by
         ORDER BY p.date_debut DESC, p.id DESC
@@ -55,7 +59,7 @@ const listerPeriodes = async (req, res) => {
 };
 
 const creerPeriode = async (req, res) => {
-  const { date_debut, date_fin, commentaire } = req.body;
+  const { date_debut, date_fin, commentaire, stock_depart_kg, caisse_depart } = req.body;
   const debut = normalizeDate(date_debut);
   const fin = normalizeDate(date_fin);
 
@@ -64,6 +68,13 @@ const creerPeriode = async (req, res) => {
   if (date_fin && !fin) return res.status(400).json({ message: 'La date de fin est invalide.' });
   if (fin && fin < debut) return res.status(400).json({ message: 'La date de fin doit être supérieure ou égale à la date de début.' });
   if (fin && fin > today()) return res.status(400).json({ message: 'La date de fin ne peut pas être dans le futur.' });
+
+  const stockDepart = stock_depart_kg === undefined || stock_depart_kg === null || stock_depart_kg === ''
+    ? 0 : parseFloat(stock_depart_kg);
+  const caisseDepartVal = caisse_depart === undefined || caisse_depart === null || caisse_depart === ''
+    ? 0 : parseFloat(caisse_depart);
+  if (isNaN(stockDepart) || stockDepart < 0) return res.status(400).json({ message: 'Stock de départ invalide.' });
+  if (isNaN(caisseDepartVal) || caisseDepartVal < 0) return res.status(400).json({ message: 'Caisse de départ invalide.' });
 
   const client = await db.getClient();
   try {
@@ -83,10 +94,10 @@ const creerPeriode = async (req, res) => {
     }
 
     const inserted = await client.query(`
-      INSERT INTO periodes_dashboard (date_debut, date_fin, commentaire, created_by)
-      VALUES ($1, $2, $3, $4)
+      INSERT INTO periodes_dashboard (date_debut, date_fin, commentaire, created_by, stock_depart_kg, caisse_depart)
+      VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING *
-    `, [debut, fin || null, commentaire?.trim() || null, req.user.id]);
+    `, [debut, fin || null, commentaire?.trim() || null, req.user.id, stockDepart, caisseDepartVal]);
 
     const periode = inserted.rows[0];
 
