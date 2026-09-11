@@ -69,12 +69,14 @@ const getOuCreerJournee = async (req, res) => {
 // ─── CLIENTS ────────────────────────────────────────────────
 const ajouterClient = async (req, res) => {
   const { journeeId } = req.params;
-  const { kg_achetes, montant_recu, heure_approx, commentaire, type_stock, poids_categorie } = req.body;
+  const { kg_achetes, montant_recu, heure_approx, commentaire, type_stock, poids_categorie, client_nom } = req.body;
 
   if (!kg_achetes || isNaN(kg_achetes) || Number(kg_achetes) <= 0)
     return res.status(400).json({ message: 'Kg achetés invalide.' });
   if (montant_recu === undefined || montant_recu === null || isNaN(montant_recu))
     return res.status(400).json({ message: 'Montant reçu invalide.' });
+
+  const nomClient = (client_nom || '').trim().toUpperCase() || 'INCONNU';
 
   const client = await db.getClient();
   try {
@@ -115,10 +117,10 @@ const ajouterClient = async (req, res) => {
 
     const newClient = await client.query(
       `INSERT INTO clients_vente
-         (journee_id, numero_client, kg_achetes, montant_recu, heure_approx, commentaire, type_stock, poids_categorie)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+         (journee_id, numero_client, kg_achetes, montant_recu, heure_approx, commentaire, type_stock, poids_categorie, client_nom)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
       [journeeId, numeroClient, kg_achetes, montant_recu, heure,
-       commentaire || null, type_stock || null, poids_categorie || null]
+       commentaire || null, type_stock || null, poids_categorie || null, nomClient]
     );
 
     await client.query('COMMIT');
@@ -132,7 +134,7 @@ const ajouterClient = async (req, res) => {
 
 const modifierClient = async (req, res) => {
   const { clientId } = req.params;
-  const { kg_achetes, montant_recu, heure_approx, commentaire, type_stock, poids_categorie } = req.body;
+  const { kg_achetes, montant_recu, heure_approx, commentaire, type_stock, poids_categorie, client_nom } = req.body;
 
   try {
     const existing = await db.query(
@@ -162,10 +164,12 @@ const modifierClient = async (req, res) => {
            commentaire     = $4,
            type_stock      = COALESCE($5, type_stock),
            poids_categorie = COALESCE($6, poids_categorie),
+           client_nom      = COALESCE($8, client_nom),
            updated_at      = NOW()
        WHERE id = $7 RETURNING *`,
       [kg_achetes ?? null, montant_recu ?? null, heure_approx ?? null,
-       commentaire ?? row.commentaire, type_stock ?? null, poids_categorie ?? null, clientId]
+       commentaire ?? row.commentaire, type_stock ?? null, poids_categorie ?? null, clientId,
+       client_nom ? client_nom.trim().toUpperCase() : null]
     );
     res.json({ client: r.rows[0] });
   } catch (err) {
