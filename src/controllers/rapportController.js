@@ -218,24 +218,51 @@ function construireHTML(d, dateDebut, dateFin) {
   </body></html>`;
 }
 
-// ─── HTML → PDF via Chromium serverless ──────────────────────
+// ─── HTML → PDF via Chromium ─────────────────────────────────
 async function htmlVersPdf(html) {
   let browser = null;
-  try {
-    // Désactiver le chargement des polices distantes pour accélérer le démarrage sur Vercel
-    chromium.setGraphicsMode = false;
+  
+  // Détection de l'environnement Vercel / Cloud
+  const isVercel = process.env.VERCEL || process.env.AWS_EXECUTION_ENV;
 
-    browser = await puppeteer.launch({
-      args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox'],
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
-      headless: chromium.headless,
-    });
+  try {
+    if (isVercel) {
+      // 🚀 ENVIRONNEMENT VERCEL (PRODUCTION)
+      const chromium = require('@sparticuz/chromium');
+      
+      // Lien direct vers le pack binaire officiel pour éviter que Vercel n'oublie le fichier
+      const CHROMIUM_PACK_URL = 'https://github.com/sparticuz/chromium/releases/download/v131.0.0/chromium-v131.0.0-pack.tar';
+
+      browser = await puppeteer.launch({
+        args: chromium.args,
+        defaultViewport: chromium.defaultViewport,
+        executablePath: await chromium.executablePath(CHROMIUM_PACK_URL),
+        headless: chromium.headless,
+      });
+    } else {
+      // 💻 ENVIRONNEMENT LOCAL (DEVELOPPEMENT)
+      // Indiquez le chemin de Google Chrome / Brave / Edge sur votre ordinateur
+      // Exemples de chemins selon votre OS :
+      // Windows: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+      // Linux: '/usr/bin/google-chrome' ou '/usr/bin/chromium-browser'
+      // Mac: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+      
+      const localChromePath = process.env.CHROME_PATH || 
+        (process.platform === 'win32' 
+          ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+          : '/usr/bin/google-chrome');
+
+      browser = await puppeteer.launch({
+        executablePath: localChromePath,
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+      });
+    }
 
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: 'domcontentloaded' });
 
-    // Injection optionnelle de Twemoji sécurisée avec bloc try/catch
+    // Twemoji pour l'affichage des emojis dans le PDF
     try {
       await page.addScriptTag({ url: 'https://cdn.jsdelivr.net/npm/twemoji@14.0.2/dist/twemoji.min.js' });
       await page.evaluate(() => {
@@ -251,7 +278,7 @@ async function htmlVersPdf(html) {
         await Promise.all(imgs.map(img => img.complete ? Promise.resolve() : new Promise(res => { img.onload = img.onerror = res; })));
       });
     } catch (e) {
-      console.warn('Twemoji asset load skipped:', e.message);
+      console.warn('Twemoji non chargé, continuation sans emoji SVG:', e.message);
     }
 
     return await page.pdf({
@@ -265,7 +292,6 @@ async function htmlVersPdf(html) {
     }
   }
 }
-
 // ─── Endpoint ────────────────────────────────────────────────
 const genererRapportPDF = async (req, res) => {
   const { date_debut, date_fin } = req.query;
