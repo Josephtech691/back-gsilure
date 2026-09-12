@@ -1,6 +1,4 @@
 const db = require('../config/db');
-const chromium = require('@sparticuz/chromium');
-const puppeteer = require('puppeteer-core');
 
 const PRIX_KG = 2500;
 const F = n => `${parseInt(n || 0).toLocaleString('fr-FR')} F`;
@@ -11,12 +9,14 @@ const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').re
 // ─── Collecte des données ────────────────────────────────────
 async function collecterDonnees(dateDebut, dateFin) {
   const [stockAvant, stockAjoute, ventes, mouvements, encaissements, pertes] = await Promise.all([
+    // Kg restant en stock à la fin de la veille du jour de début choisi
     db.query(`
       SELECT GREATEST(0,
         COALESCE((SELECT SUM(quantite_kg) FROM stocks WHERE date_depot < $1::date), 0)
         - COALESCE((SELECT SUM(cv.kg_achetes) FROM ventes_journees vj JOIN clients_vente cv ON cv.journee_id = vj.id WHERE vj.date_vente < $1::date), 0)
         - COALESCE((SELECT SUM(kg_perdus) FROM pertes_stock WHERE date_perte < $1::date), 0)
       ) AS kg`, [dateDebut]),
+    // Kg ajoutés du jour de début jusqu'à la fin du jour de fin (inclus)
     db.query(`SELECT COALESCE(SUM(quantite_kg),0) AS kg FROM stocks WHERE date_depot BETWEEN $1::date AND $2::date`, [dateDebut, dateFin]),
     db.query(`
       SELECT vj.date_vente::text AS date, cv.client_nom, u.nom || ' ' || u.prenom AS employe,
@@ -139,9 +139,10 @@ function construireHTML(d, dateDebut, dateFin) {
 
   return `<!DOCTYPE html>
   <html><head><meta charset="utf-8"><style>
-    @page { size: A4; margin: 0; }
+    @page { size: A4; margin: 12mm; }
+    @media print { .no-print { display: none !important; } }
     * { box-sizing: border-box; }
-    body { font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b; margin: 0; font-size: 12px; }
+    body { font-family: 'DejaVu Sans', 'Segoe UI', Arial, sans-serif; color: #1e293b; margin: 0; font-size: 12px; }
     .page { padding: 0 34px 34px; }
     .header { background: linear-gradient(120deg, #0e7490, #0369a1); color: #fff; padding: 28px 34px; margin-bottom: 22px; }
     .header h1 { margin: 0 0 6px; font-size: 22px; }
@@ -215,119 +216,13 @@ function construireHTML(d, dateDebut, dateFin) {
       </div>
 
     </div>
+    <div class="no-print" style="position:fixed;top:14px;right:14px;">
+      <button onclick="window.print()" style="background:#0369a1;color:#fff;border:none;padding:10px 18px;border-radius:8px;font-weight:bold;font-size:13px;cursor:pointer;box-shadow:0 4px 10px rgba(0,0,0,.15);">🖨️ Imprimer / Enregistrer en PDF</button>
+    </div>
+    <script>window.addEventListener('load', () => setTimeout(() => window.print(), 400));</script>
   </body></html>`;
 }
 
-// ─── HTML → PDF via Chromium ─────────────────────────────────
-async function htmlVersPdf(html) {
-  let browser = null;
-
-  try {
-    const isVercel =
-      process.env.VERCEL === '1' ||
-      process.env.VERCEL === 'true' ||
-      !!process.env.AWS_EXECUTION_ENV;
-
-    if (isVercel) {
-      console.log('🚀 Génération PDF sur Vercel');
-
-      // Utilise le Chromium fourni par @sparticuz/chromium
-      const executablePath = await chromium.executablePath();
-
-      console.log('Chromium executablePath:', executablePath);
-
-      browser = await puppeteer.launch({
-        args: [
-          ...chromium.args,
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage'
-        ],
-        defaultViewport: chromium.defaultViewport,
-        executablePath,
-        headless: true
-      });
-    } else {
-      // 💻 Développement local
-      const localChromePath =
-        process.env.CHROME_PATH ||
-        (process.platform === 'win32'
-          ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
-          : '/usr/bin/google-chrome');
-
-      console.log('Chrome local:', localChromePath);
-
-      browser = await puppeteer.launch({
-        executablePath: localChromePath,
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage'
-        ]
-      });
-    }
-
-    const page = await browser.newPage();
-
-    await page.setContent(html, {
-      waitUntil: 'networkidle0'
-    });
-
-    // Twemoji
-    try {
-      await page.addScriptTag({
-        url: 'https://cdn.jsdelivr.net/npm/twemoji@14.0.2/dist/twemoji.min.js'
-      });
-
-      await page.evaluate(() => {
-        if (typeof twemoji !== 'undefined') {
-          twemoji.parse(document.body, {
-            folder: 'svg',
-            ext: '.svg',
-            base: 'https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/'
-          });
-        }
-      });
-
-      await page.evaluate(async () => {
-        const imgs = Array.from(document.images);
-
-        await Promise.all(
-          imgs.map(img =>
-            img.complete
-              ? Promise.resolve()
-              : new Promise(resolve => {
-                  img.onload = resolve;
-                  img.onerror = resolve;
-                })
-          )
-        );
-      });
-    } catch (e) {
-      console.warn(
-        'Twemoji non chargé, continuation sans emoji SVG:',
-        e.message
-      );
-    }
-
-    return await page.pdf({
-      format: 'A4',
-      printBackground: true,
-      margin: {
-        top: '0',
-        bottom: '20px',
-        left: '0',
-        right: '0'
-      }
-    });
-
-  } finally {
-    if (browser) {
-      await browser.close();
-    }
-  }
-}
 // ─── Endpoint ────────────────────────────────────────────────
 const genererRapportPDF = async (req, res) => {
   const { date_debut, date_fin } = req.query;
@@ -337,11 +232,8 @@ const genererRapportPDF = async (req, res) => {
   try {
     const d = await collecterDonnees(date_debut, date_fin);
     const html = construireHTML(d, date_debut, date_fin);
-    const pdfBuffer = await htmlVersPdf(html);
-
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="rapport-${date_debut}-au-${date_fin}.pdf"`);
-    res.send(pdfBuffer);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
   } catch (err) {
     console.error('genererRapportPDF:', err);
     if (!res.headersSent) res.status(500).json({ message: err.message || 'Erreur lors de la génération du rapport.' });
