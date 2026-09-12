@@ -221,73 +221,109 @@ function construireHTML(d, dateDebut, dateFin) {
 // ─── HTML → PDF via Chromium ─────────────────────────────────
 async function htmlVersPdf(html) {
   let browser = null;
-  
-  // Détection de l'environnement Vercel / Cloud
-  const isVercel = process.env.VERCEL || process.env.AWS_EXECUTION_ENV;
 
   try {
+    const isVercel =
+      process.env.VERCEL === '1' ||
+      process.env.VERCEL === 'true' ||
+      !!process.env.AWS_EXECUTION_ENV;
+
     if (isVercel) {
-      // 🚀 ENVIRONNEMENT VERCEL (PRODUCTION)
-      const chromium = require('@sparticuz/chromium');
-      
-      // Lien direct vers le pack binaire officiel pour éviter que Vercel n'oublie le fichier
-      const CHROMIUM_PACK_URL = 'https://github.com/sparticuz/chromium/releases/download/v131.0.0/chromium-v131.0.0-pack.tar';
+      console.log('🚀 Génération PDF sur Vercel');
+
+      // Utilise le Chromium fourni par @sparticuz/chromium
+      const executablePath = await chromium.executablePath();
+
+      console.log('Chromium executablePath:', executablePath);
 
       browser = await puppeteer.launch({
-        args: chromium.args,
+        args: [
+          ...chromium.args,
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage'
+        ],
         defaultViewport: chromium.defaultViewport,
-        executablePath: await chromium.executablePath(CHROMIUM_PACK_URL),
-        headless: chromium.headless,
+        executablePath,
+        headless: true
       });
     } else {
-      // 💻 ENVIRONNEMENT LOCAL (DEVELOPPEMENT)
-      // Indiquez le chemin de Google Chrome / Brave / Edge sur votre ordinateur
-      // Exemples de chemins selon votre OS :
-      // Windows: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
-      // Linux: '/usr/bin/google-chrome' ou '/usr/bin/chromium-browser'
-      // Mac: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-      
-      const localChromePath = process.env.CHROME_PATH || 
-        (process.platform === 'win32' 
+      // 💻 Développement local
+      const localChromePath =
+        process.env.CHROME_PATH ||
+        (process.platform === 'win32'
           ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
           : '/usr/bin/google-chrome');
+
+      console.log('Chrome local:', localChromePath);
 
       browser = await puppeteer.launch({
         executablePath: localChromePath,
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage'
+        ]
       });
     }
 
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'domcontentloaded' });
 
-    // Twemoji pour l'affichage des emojis dans le PDF
+    await page.setContent(html, {
+      waitUntil: 'networkidle0'
+    });
+
+    // Twemoji
     try {
-      await page.addScriptTag({ url: 'https://cdn.jsdelivr.net/npm/twemoji@14.0.2/dist/twemoji.min.js' });
+      await page.addScriptTag({
+        url: 'https://cdn.jsdelivr.net/npm/twemoji@14.0.2/dist/twemoji.min.js'
+      });
+
       await page.evaluate(() => {
         if (typeof twemoji !== 'undefined') {
           twemoji.parse(document.body, {
-            folder: 'svg', ext: '.svg',
-            base: 'https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/',
+            folder: 'svg',
+            ext: '.svg',
+            base: 'https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/'
           });
         }
       });
+
       await page.evaluate(async () => {
         const imgs = Array.from(document.images);
-        await Promise.all(imgs.map(img => img.complete ? Promise.resolve() : new Promise(res => { img.onload = img.onerror = res; })));
+
+        await Promise.all(
+          imgs.map(img =>
+            img.complete
+              ? Promise.resolve()
+              : new Promise(resolve => {
+                  img.onload = resolve;
+                  img.onerror = resolve;
+                })
+          )
+        );
       });
     } catch (e) {
-      console.warn('Twemoji non chargé, continuation sans emoji SVG:', e.message);
+      console.warn(
+        'Twemoji non chargé, continuation sans emoji SVG:',
+        e.message
+      );
     }
 
     return await page.pdf({
       format: 'A4',
       printBackground: true,
-      margin: { top: '0', bottom: '20px', left: '0', right: '0' }
+      margin: {
+        top: '0',
+        bottom: '20px',
+        left: '0',
+        right: '0'
+      }
     });
+
   } finally {
-    if (browser !== null) {
+    if (browser) {
       await browser.close();
     }
   }
