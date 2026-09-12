@@ -219,7 +219,6 @@ function construireHTML(d, dateDebut, dateFin) {
     <div class="no-print" style="position:fixed;top:14px;right:14px;">
       <button onclick="window.print()" style="background:#0369a1;color:#fff;border:none;padding:10px 18px;border-radius:8px;font-weight:bold;font-size:13px;cursor:pointer;box-shadow:0 4px 10px rgba(0,0,0,.15);">🖨️ Imprimer / Enregistrer en PDF</button>
     </div>
-    <script>window.addEventListener('load', () => setTimeout(() => window.print(), 400));</script>
   </body></html>`;
 }
 
