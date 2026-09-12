@@ -7,6 +7,10 @@
     }
   ],
   "functions": {
-    "api/index.js": { "maxDuration": 30, "memory": 1024 }
+    "**/*.js": {
+      "includeFiles": "node_modules/@sparticuz/chromium/bin/**",
+      "memory": 1024,
+      "maxDuration": 30
+    }
   }
 }
