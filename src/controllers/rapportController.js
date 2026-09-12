@@ -70,7 +70,7 @@ async function collecterDonnees(dateDebut, dateFin) {
     totalSorties: totalRetraits + totalVerse,
     pertes: { kg: parseFloat(pertes.rows[0].kg), valeur: parseFloat(pertes.rows[0].kg) * PRIX_KG },
     caisseTotale,
-    caisseRestante: caisseTotale - totalRetraits,
+    caisseRestante: caisseTotale - totalRetraits - totalVerse,
   };
 }
 
@@ -195,8 +195,7 @@ function construireHTML(d, dateDebut, dateFin) {
         <div class="kv"><span>Total kg vendu</span><b>${KG(d.totaux.kgVendu)}</b></div>
         <div class="kv green"><span>Total encaissé</span><b>${F(d.totaux.encaisse)}</b></div>
         <div class="kv red"><span>Total des restes</span><b>${F(d.totaux.reste)}</b></div>
-        <div class="badge-caisse">💼 Caisse totale (ventes + ajouts) : ${F(d.caisseTotale)}</div>
-        <div class="badge-caisse">🏦 Caisse restante (caisse totale − retraits) : ${F(d.caisseRestante)}</div>
+        
       </div>
 
       <div class="section">
@@ -213,6 +212,8 @@ function construireHTML(d, dateDebut, dateFin) {
         <div class="recap-grid">
           ${recap.map(([n, label, val]) => `<div class="recap-item"><span>${n}. ${esc(label)}</span><span class="num">${val}</span></div>`).join('')}
         </div>
+        <div class="badge-caisse">💼 Caisse totale (ventes + ajouts) : ${F(d.caisseTotale)}</div>
+        <div class="badge-caisse">🏦 Caisse restante (caisse totale − (retraits+verser)) : ${F(d.caisseRestante)}</div>
       </div>
 
     </div>
