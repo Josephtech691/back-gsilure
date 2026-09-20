@@ -534,7 +534,7 @@ const dashboard = async (req, res) => {
       const perdu = parseFloat(stockPeriode.rows[0].kg_perdus || 0);
       stock = {
         total_kg_achete: debut + ajoute,
-        total_kg_vendu: vendu + perdu,
+        total_kg_vendu: vendu,
         total_kg_perdu: perdu,
         kg_stock_avant_periode: debut,
         kg_ajoutes_periode: ajoute,
