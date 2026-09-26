@@ -80,19 +80,6 @@ const creerPeriode = async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // Deux périodes ne doivent pas se chevaucher : cela rend le calcul du stock
-    // et les historiques non ambigus.
-    const overlap = await client.query(`
-      SELECT id FROM periodes_dashboard
-      WHERE daterange(date_debut, COALESCE(date_fin, 'infinity'::date), '[]')
-            && daterange($1::date, COALESCE($2::date, 'infinity'::date), '[]')
-      LIMIT 1
-    `, [debut, fin]);
-    if (overlap.rows.length) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({ message: 'Cette période chevauche déjà une période existante.' });
-    }
-
     const inserted = await client.query(`
       INSERT INTO periodes_dashboard (date_debut, date_fin, commentaire, created_by, stock_depart_kg, caisse_depart)
       VALUES ($1, $2, $3, $4, $5, $6)
