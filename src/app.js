@@ -41,6 +41,7 @@ app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/ventes', require('./routes/ventes'));
+app.use('/api/caisse', require('./routes/caisse'));
 app.use('/api/stocks', require('./routes/stocks'));
 app.use('/api/chat', require('./routes/chat'));
 app.use('/api/pertes', require('./routes/pertes'));
