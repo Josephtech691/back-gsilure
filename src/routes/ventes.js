@@ -15,6 +15,7 @@ router.get('/graphique', authenticate, ctrl.graphiqueEmploye);
 router.get('/dashboard', authenticate, adminOnly, ctrl.dashboard);
 router.get('/admin-graphiques', authenticate, adminOnly, ctrl.graphiquesAdmin);
 router.get('/demandes', authenticate, adminOnly, ctrl.listerDemandes);
+router.get('/mes-demandes', authenticate, ctrl.listerMesDemandes);
 router.get('/parametres/employes', authenticate, adminOnly, ctrl.listerEmployesParametres);
 router.get('/parametres/employes/:employe_id/journees', authenticate, adminOnly, ctrl.listerJourneesEmploye);
 router.patch('/parametres/demandes/:id', authenticate, adminOnly, ctrl.modifierDemandeAdmin);
