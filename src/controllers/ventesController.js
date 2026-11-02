@@ -95,7 +95,7 @@ const getOuCreerJournee = async (req, res) => {
 // ─── CLIENTS ────────────────────────────────────────────────
 const ajouterClient = async (req, res) => {
   const { journeeId } = req.params;
-  const { kg_achetes, montant_recu, heure_approx, commentaire, type_stock, poids_categorie, poids_categories, client_nom } = req.body;
+  const { kg_achetes, montant_recu, heure_approx, commentaire, type_stock, poids_categorie, poids_categories, client_nom, bacs_selectionnes } = req.body;
 
   if (!kg_achetes || isNaN(kg_achetes) || Number(kg_achetes) <= 0)
     return res.status(400).json({ message: 'Kg achetés invalide.' });
@@ -106,6 +106,19 @@ const ajouterClient = async (req, res) => {
   const poidsSelectionnes = Array.isArray(poids_categories) ? [...new Set(poids_categories)].slice(0, 3) : (poids_categorie ? [poids_categorie] : []);
   if (Array.isArray(poids_categories) && poids_categories.length > 3)
     return res.status(400).json({ message: 'Vous pouvez sélectionner au maximum 3 catégories de poids.' });
+  const bacs = Array.isArray(bacs_selectionnes) ? [...new Set(bacs_selectionnes.map(Number))] : [];
+  if (bacs.length < 1 || bacs.length > 3 || bacs.some(n => !Number.isInteger(n) || n < 1 || n > 7))
+    return res.status(400).json({ message: 'Sélectionnez entre 1 et 3 bacs valides.' });
+  const kgTotal = Number(kg_achetes);
+  const ratios = bacs.length === 1 ? [1] : bacs.length === 2 ? [0.75, 0.25] : [0.50, 0.30, 0.20];
+  const bacsRepartition = bacs.map((bac_numero, index) => ({
+    bac_numero, pourcentage: ratios[index] * 100,
+    quantite_kg: Math.round(kgTotal * ratios[index] * 100) / 100
+  }));
+  if (bacsRepartition.length > 1) {
+    const sommeAvantDernier = bacsRepartition.slice(0, -1).reduce((s, b) => s + b.quantite_kg, 0);
+    bacsRepartition[bacsRepartition.length - 1].quantite_kg = Math.round((kgTotal - sommeAvantDernier) * 100) / 100;
+  }
 
   const client = await db.getClient();
   try {
@@ -158,10 +171,10 @@ const ajouterClient = async (req, res) => {
 
     const newClient = await client.query(
       `INSERT INTO clients_vente
-         (journee_id, numero_client, kg_achetes, montant_recu, heure_approx, commentaire, type_stock, poids_categorie, poids_categories, client_nom)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+         (journee_id, numero_client, kg_achetes, montant_recu, heure_approx, commentaire, type_stock, poids_categorie, poids_categories, client_nom, bacs_repartition)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb) RETURNING *`,
       [journeeId, numeroClient, kg_achetes, montant_recu, heure,
-       commentaire || null, type_stock || null, poidsSelectionnes[0] || null, poidsSelectionnes, nomClient]
+       commentaire || null, type_stock || null, poidsSelectionnes[0] || null, poidsSelectionnes, nomClient, JSON.stringify(bacsRepartition)]
     );
 
     await client.query('COMMIT');
@@ -352,8 +365,8 @@ const creerEncaissement = async (req, res) => {
       `INSERT INTO demandes (employe_id, type, ref_id, ref_table, motif, meta)
        VALUES ($1, 'encaissement', $2, 'encaissements', $3, $4)`,
       [req.user.id, enc.rows[0].id,
-       `Versement de ${parseFloat(montant).toLocaleString('fr')} FCFA`,
-       JSON.stringify({ montant, mois: moisCible })]
+       commentaire?.trim() || `Versement de ${parseFloat(montant).toLocaleString('fr')} FCFA`,
+       JSON.stringify({ montant, mois: moisCible, commentaire: commentaire?.trim() || null })]
     );
     res.status(201).json({ message: 'Encaissement soumis.', encaissement: enc.rows[0] });
   } catch (err) {
@@ -737,6 +750,26 @@ const listerDemandes = async (req, res) => {
     const r = await db.query(q, params);
     res.json(r.rows);
   } catch (err) { console.error('listerDemandes:', err); res.status(500).json({ message: 'Erreur serveur.' }); }
+};
+
+const listerMesDemandes = async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT d.*,
+              CASE
+                WHEN d.type='mouvement_caisse' THEN (SELECT commentaire FROM mouvements_caisse WHERE id=d.ref_id)
+                WHEN d.type='encaissement' THEN (SELECT commentaire FROM encaissements WHERE id=d.ref_id)
+                WHEN d.type='annulation_reste' THEN (SELECT reste_annule_motif FROM clients_vente WHERE id=d.ref_id)
+                ELSE NULL
+              END AS commentaire_demande
+       FROM demandes d WHERE d.employe_id=$1 ORDER BY d.created_at DESC`,
+      [req.user.id]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('listerMesDemandes:', err);
+    res.status(500).json({ message: 'Impossible de charger vos demandes.' });
+  }
 };
 
 const traiterDemande = async (req, res) => {
@@ -1251,7 +1284,7 @@ const modifierJourneeHistorique = async (req, res) => {
 module.exports = {
   getOuCreerJournee, ajouterClient, modifierClient, supprimerClient,
   demanderAnnulationReste, creerMouvementCaisse, creerEncaissement,
-  graphiqueEmploye, dashboard, listerDemandes, traiterDemande, demanderModification,
+  graphiqueEmploye, dashboard, listerDemandes, listerMesDemandes, traiterDemande, demanderModification,
   revenusVentes, ventesJournalier, statsRestes, graphiquesAdmin,
   listerEmployesParametres, listerJourneesEmploye, modifierDemandeAdmin, verifierCodeHistorique, modifierJourneeHistorique,
 };

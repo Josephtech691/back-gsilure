@@ -75,10 +75,17 @@ const etatBacs = async (req, res) => {
                (SELECT COALESCE(SUM(s2.quantite_kg),0) FROM stocks s2 WHERE s2.bac_numero=s.bac_numero)
                - (SELECT COALESCE(SUM(p.kg_perdus),0) FROM pertes_stock p WHERE p.bac_numero=s.bac_numero)
                - (SELECT COALESCE(SUM(r.quantite_kg),0) FROM retraits_stock r WHERE r.bac_numero=s.bac_numero)
+               - COALESCE((
+                   SELECT SUM((part->>'quantite_kg')::numeric)
+                   FROM clients_vente cv
+                   CROSS JOIN LATERAL jsonb_array_elements(COALESCE(cv.bacs_repartition, '[]'::jsonb)) AS part
+                   WHERE (part->>'bac_numero')::integer = s.bac_numero
+                 ), 0)
                - LEAST(
                    (SELECT COALESCE(SUM(s3.quantite_kg),0) FROM stocks s3 WHERE s3.bac_numero=s.bac_numero),
                    GREATEST(0,
-                     (SELECT COALESCE(SUM(cv.kg_achetes),0) FROM clients_vente cv)
+                     (SELECT COALESCE(SUM(cv.kg_achetes),0) FROM clients_vente cv
+                      WHERE COALESCE(cv.bacs_repartition, '[]'::jsonb) = '[]'::jsonb)
                      - (SELECT COALESCE(SUM(s4.quantite_kg),0) FROM stocks s4 WHERE s4.bac_numero < s.bac_numero)
                    )
                  )
