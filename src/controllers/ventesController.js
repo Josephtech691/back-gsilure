@@ -1040,6 +1040,21 @@ const graphiquesAdmin = async (req, res) => {
       WHERE u.role = 'employee'
       GROUP BY u.id, u.nom, u.prenom, u.rattache_a_id ORDER BY ca DESC, employe_nom ASC`, [date_debut, date_fin]);
 
+    // Ajouts d'argent réellement approuvés en caisse, regroupés par date.
+    // Ils sont ajoutés aux encaissements de ventes pour le calcul du bénéfice estimé.
+    const ajoutsCaisse = await db.query(`
+      SELECT mc.date_mouvement::text AS date,
+             COALESCE(SUM(mc.montant), 0)::float AS montant
+      FROM mouvements_caisse mc
+      JOIN users u ON u.id = COALESCE((SELECT rattache_a_id FROM users WHERE id = mc.employe_id), mc.employe_id)
+      WHERE mc.statut = 'approuvee'
+        AND mc.type = 'ajout'
+        AND mc.date_mouvement BETWEEN $1::date AND $2::date
+        AND u.role = 'employee'
+      GROUP BY mc.date_mouvement
+      ORDER BY mc.date_mouvement
+    `, [date_debut, date_fin]);
+
     const produits = await db.query(`
       SELECT COALESCE(NULLIF(BTRIM(cv.type_stock), ''), 'Produit non précisé') AS produit,
              COALESCE(SUM(cv.kg_achetes), 0)::float AS kg,
@@ -1117,6 +1132,7 @@ const graphiquesAdmin = async (req, res) => {
 
     res.json({
       ventes: ventes.rows,
+      ajouts_caisse: ajoutsCaisse.rows,
       employes: employes.rows,
       produits: produits.rows,
       poids_vendus: poidsVendus.rows,
