@@ -92,11 +92,12 @@ const etatBacs = async (req, res) => {
              ) AS kg_disponible_bac,
              MAX(s.prix_par_kg) AS dernier_prix,
              COUNT(*) AS nb_depots,
-             MAX(s.date_depot) AS dernier_depot
+             MAX(s.date_depot) AS dernier_depot,
+             (SELECT s5.quantite_kg FROM stocks s5 WHERE s5.bac_numero=s.bac_numero ORDER BY s5.date_depot DESC, s5.created_at DESC LIMIT 1) AS dernier_depot_kg
       FROM stocks s
       WHERE s.bac_numero IS NOT NULL
       GROUP BY s.bac_numero, s.type_stock, s.poids_categorie
-      ORDER BY s.bac_numero, s.poids_categorie`);
+      ORDER BY s.bac_numero, dernier_depot DESC, s.poids_categorie`);
 
     // Stock vendu (par type) — on associe les ventes aux stocks du même type
     const ventes = await db.query(`
@@ -234,7 +235,14 @@ const retirerStock = async (req, res) => {
         COALESCE((SELECT SUM(quantite_kg) FROM stocks WHERE bac_numero=$1),0)
         - COALESCE((SELECT SUM(kg_perdus) FROM pertes_stock WHERE bac_numero=$1),0)
         - COALESCE((SELECT SUM(quantite_kg) FROM retraits_stock WHERE bac_numero=$1),0)
-        AS disponible_bac,
+        - COALESCE((SELECT SUM((part->>'quantite_kg')::numeric) FROM clients_vente cv CROSS JOIN LATERAL jsonb_array_elements(COALESCE(cv.bacs_repartition, '[]'::jsonb)) AS part WHERE (part->>'bac_numero')::integer=$1),0)
+        - LEAST(
+            COALESCE((SELECT SUM(quantite_kg) FROM stocks WHERE bac_numero=$1),0),
+            GREATEST(0,
+              (SELECT COALESCE(SUM(cv.kg_achetes),0) FROM clients_vente cv WHERE COALESCE(cv.bacs_repartition, '[]'::jsonb)='[]'::jsonb)
+              - COALESCE((SELECT SUM(s4.quantite_kg) FROM stocks s4 WHERE s4.bac_numero < $1),0)
+            )
+          ) AS disponible_bac,
         COALESCE((SELECT SUM(s.quantite_kg) FROM stocks s),0)
         - COALESCE((SELECT SUM(cv.kg_achetes) FROM clients_vente cv),0)
         - COALESCE((SELECT SUM(p.kg_perdus) FROM pertes_stock p),0)

@@ -60,13 +60,16 @@ const historiqueCaisse = async (req, res) => {
   if (date_debut) { params.push(date_debut); where += ` AND h.date_operation >= $${params.length}::date`; }
   if (date_fin) { params.push(date_fin); where += ` AND h.date_operation < ($${params.length}::date + INTERVAL '1 day')`; }
   if (type && ['entree','sortie'].includes(type)) { params.push(type); where += ` AND h.sens = $${params.length}`; }
-  if (employe_id) { params.push(employe_id); where += ` AND h.employe_id = $${params.length}::uuid`; }
+  if (employe_id) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(employe_id)) return res.status(400).json({ message: 'Identifiant employé invalide.' });
+    params.push(employe_id); where += ` AND h.employe_id = $${params.length}::uuid`;
+  }
   const maxRows = Math.min(Math.max(parseInt(limit || '300', 10) || 300, 1), 1000);
   params.push(maxRows);
   try {
     const r = await db.query(`
       SELECT * FROM (
-        SELECT vj.date_vente AS date_operation, cv.created_at AS horodatage,
+        SELECT vj.date_vente::date AS date_operation, cv.created_at AS horodatage,
                'vente'::text AS categorie, 'entree'::text AS sens,
                cv.montant_recu::numeric AS montant,
                ('Vente client ' || cv.numero_client)::text AS commentaire,
@@ -78,15 +81,15 @@ const historiqueCaisse = async (req, res) => {
         JOIN users owner ON owner.id=COALESCE(vendeur.rattache_a_id,vendeur.id)
         WHERE owner.role='employee'
         UNION ALL
-        SELECT mc.date_mouvement, mc.created_at,
+        SELECT mc.date_mouvement::date AS date_operation, mc.created_at AS horodatage,
                CASE WHEN mc.type='ajout' THEN 'Ajout caisse' ELSE 'Retrait caisse' END,
                CASE WHEN mc.type='ajout' THEN 'entree' ELSE 'sortie' END,
                mc.montant::numeric, mc.commentaire,
-               u.id, u.nom || ' ' || u.prenom, mc.id::text, mc.operation_admin_id
+               u.id, u.nom || ' ' || u.prenom, mc.id::text, NULL::uuid
         FROM mouvements_caisse mc JOIN users u ON u.id=mc.employe_id
         WHERE mc.statut='approuvee'
         UNION ALL
-        SELECT e.date_encaissement, e.created_at, 'Versement à la direction',
+        SELECT e.date_encaissement::date AS date_operation, e.created_at AS horodatage, 'Versement à la direction',
                'sortie', e.montant::numeric, COALESCE(e.commentaire,'Versement'),
                u.id, u.nom || ' ' || u.prenom, e.id::text, NULL::uuid
         FROM encaissements e JOIN users u ON u.id=e.employe_id
