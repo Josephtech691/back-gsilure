@@ -44,6 +44,8 @@ app.use('/api/ventes', require('./routes/ventes'));
 app.use('/api/caisse', require('./routes/caisse'));
 app.use('/api/stocks', require('./routes/stocks'));
 app.use('/api/chat', require('./routes/chat'));
+app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/cron', require('./routes/cron'));
 app.use('/api/pertes', require('./routes/pertes'));
 app.use('/api/periodes', require('./routes/periodes'));
 app.use('/api/clients', require('./routes/clients'));
