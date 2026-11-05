@@ -84,6 +84,16 @@ const detailClient = async (req, res) => {
       FROM clients_vente cv JOIN ventes_journees vj ON vj.id = cv.journee_id
       WHERE cv.client_nom = $1`, [nom]);
 
+    const dernierAchatQ = db.query(`
+      SELECT cv.kg_achetes, cv.montant_recu, cv.heure_approx, cv.commentaire,
+             vj.date_vente, u.nom || ' ' || u.prenom AS employe_nom
+      FROM clients_vente cv
+      JOIN ventes_journees vj ON vj.id = cv.journee_id
+      JOIN users u ON u.id = vj.employe_id
+      WHERE cv.client_nom = $1
+      ORDER BY vj.date_vente DESC, cv.heure_approx DESC, cv.created_at DESC
+      LIMIT 1`, [nom]);
+
     const moisQ = db.query(`
       SELECT COALESCE(SUM(cv.kg_achetes),0) AS kg
       FROM clients_vente cv JOIN ventes_journees vj ON vj.id = cv.journee_id
@@ -123,10 +133,11 @@ const detailClient = async (req, res) => {
       }
     }
 
-    const [total, moisR, anneeR, semaineR] = await Promise.all([totalQ, moisQ, anneeQ, semaineQ]);
+    const [total, moisR, anneeR, semaineR, dernierAchatR] = await Promise.all([totalQ, moisQ, anneeQ, semaineQ, dernierAchatQ]);
 
     res.json({
       info,
+      dernier_achat: dernierAchatR.rows[0] || null,
       kg_total: parseFloat(total.rows[0].kg),
       montant_total: parseFloat(total.rows[0].montant),
       nb_achats: parseInt(total.rows[0].nb),
