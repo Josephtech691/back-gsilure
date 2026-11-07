@@ -12,5 +12,11 @@
       "memory": 1024,
       "maxDuration": 30
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/inactivity",
+      "schedule": "0 7 * * *"
+    }
+  ]
 }

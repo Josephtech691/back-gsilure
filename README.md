@@ -53,3 +53,8 @@ Les endpoints dashboard existants acceptent désormais `periode_id` pour les don
 Une migration SQL est fournie dans `database/employes-rattaches.sql`. Exécutez-la sur la base PostgreSQL avant de déployer cette version.
 
 Lors de la création d'un employé, l'administrateur peut choisir un employé principal auquel le rattacher. L'employé rattaché garde ses pages de vente mais ne dispose pas des fonctions de caisse (ajout, retrait, versement). Ses ventes sont incluses dans les statistiques du compte principal, tandis que les enregistrements des ventes conservent l'identité du vendeur réel pour l'administration.
+
+
+## Migration complémentaire — caisse et retraits de stock
+
+Avant de déployer cette version, exécuter une seule fois le fichier `migration_caisse_stock_retraits.sql` (copie backend : `database/caisse-stock-retraits.sql`) sur la base PostgreSQL utilisée par le backend.
