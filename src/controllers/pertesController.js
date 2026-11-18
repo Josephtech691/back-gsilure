@@ -38,14 +38,14 @@ const declarerPerte = async (req, res) => {
 const listerPertes = async (req, res) => {
   const { mois, annee, type_perte, type_stock } = req.query;
   try {
-    let q = `SELECT p.*, u.nom || ' ' || u.prenom AS declare_par_nom, u.role AS declare_par_role
+    let q = `SELECT p.*, p.date_perte::text AS date_perte_txt, u.nom || ' ' || u.prenom AS declare_par_nom, u.role AS declare_par_role
              FROM pertes_stock p LEFT JOIN users u ON p.declare_par = u.id WHERE 1=1`;
     const params = [];
     if (mois)       { params.push(mois);      q += ` AND p.mois = $${params.length}`; }
     if (annee)      { params.push(annee);     q += ` AND p.annee = $${params.length}`; }
     if (type_perte) { params.push(type_perte);q += ` AND p.type_perte = $${params.length}`; }
     if (type_stock) { params.push(type_stock);q += ` AND p.type_stock = $${params.length}`; }
-    q += ' ORDER BY p.created_at DESC';
+    q += ' ORDER BY p.date_perte DESC NULLS LAST, p.created_at DESC';
     const r = await db.query(q, params);
     res.json(r.rows);
   } catch (err) { res.status(500).json({ message: 'Erreur serveur.' }); }
