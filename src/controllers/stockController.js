@@ -13,6 +13,54 @@ async function getPrixCourant(type_stock, poids_categorie) {
   return r.rows[0]?.prix_par_kg || 2500;
 }
 
+
+// ─── Calcul unique du stock restant par bac (utilisé par la vue bacs ET par le contrôle des retraits) ───
+// Pour chaque bac : entrées − pertes − retraits − ventes affectées au bac.
+// Les anciennes ventes SANS répartition sont imputées dans l'ordre des bacs, mais seulement
+// sur ce qui reste réellement dans chaque bac (après pertes/retraits/ventes), et non sur le dépôt brut.
+const BAC_CTE = `
+  WITH bacs AS (SELECT generate_series(1,7) AS bac_numero),
+  ent AS (SELECT bac_numero, SUM(quantite_kg) AS kg FROM stocks WHERE bac_numero IS NOT NULL GROUP BY bac_numero),
+  per AS (SELECT bac_numero, SUM(kg_perdus) AS kg FROM pertes_stock WHERE bac_numero IS NOT NULL GROUP BY bac_numero),
+  ret AS (SELECT bac_numero, SUM(quantite_kg) AS kg FROM retraits_stock GROUP BY bac_numero),
+  vrep AS (
+    SELECT (part->>'bac_numero')::integer AS bac_numero, SUM((part->>'quantite_kg')::numeric) AS kg
+    FROM clients_vente cv
+    CROSS JOIN LATERAL jsonb_array_elements(COALESCE(cv.bacs_repartition, '[]'::jsonb)) AS part
+    WHERE NULLIF(part->>'bac_numero','') IS NOT NULL
+    GROUP BY (part->>'bac_numero')::integer
+  ),
+  leg AS (
+    SELECT COALESCE(SUM(kg_achetes),0) AS kg FROM clients_vente
+    WHERE COALESCE(bacs_repartition, '[]'::jsonb) = '[]'::jsonb
+  ),
+  base AS (
+    SELECT b.bac_numero,
+           COALESCE(ent.kg,0) AS kg_entre,
+           COALESCE(per.kg,0) AS kg_perdu_bac,
+           COALESCE(ret.kg,0) AS kg_retire_bac,
+           COALESCE(vrep.kg,0) AS kg_vendu_bac,
+           COALESCE(ent.kg,0) - COALESCE(per.kg,0) - COALESCE(ret.kg,0) - COALESCE(vrep.kg,0) AS residuel
+    FROM bacs b
+    LEFT JOIN ent  ON ent.bac_numero  = b.bac_numero
+    LEFT JOIN per  ON per.bac_numero  = b.bac_numero
+    LEFT JOIN ret  ON ret.bac_numero  = b.bac_numero
+    LEFT JOIN vrep ON vrep.bac_numero = b.bac_numero
+  ),
+  alloc AS (
+    SELECT base.*,
+           LEAST(GREATEST(residuel,0),
+                 GREATEST(0, (SELECT kg FROM leg)
+                   - COALESCE(SUM(GREATEST(residuel,0)) OVER (ORDER BY bac_numero ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0))
+           ) AS kg_vendu_ancien
+    FROM base
+  ),
+  bac_final AS (
+    SELECT alloc.*, (residuel - kg_vendu_ancien) AS kg_disponible_brut,
+           GREATEST(0, residuel - kg_vendu_ancien) AS kg_disponible_bac
+    FROM alloc
+  )`;
+
 /** POST /api/stocks — Nouveau dépôt */
 const ajouterDepot = async (req, res) => {
   const { date_depot, quantite_kg, type_stock, poids_categorie, bac_numero, note } = req.body;
@@ -67,37 +115,26 @@ const listerDepots = async (req, res) => {
 /** GET /api/stocks/bacs — Vue par bac (état actuel) */
 const etatBacs = async (req, res) => {
   try {
-    // Stock total entré par bac/type
+    // Lignes par bac/type/catégorie + stock restant du bac (calcul unique, cohérent avec le total)
     const entrees = await db.query(`
+      ${BAC_CTE}
       SELECT s.bac_numero, s.type_stock, s.poids_categorie,
              SUM(s.quantite_kg) AS kg_total,
-             GREATEST(0,
-               (SELECT COALESCE(SUM(s2.quantite_kg),0) FROM stocks s2 WHERE s2.bac_numero=s.bac_numero)
-               - (SELECT COALESCE(SUM(p.kg_perdus),0) FROM pertes_stock p WHERE p.bac_numero=s.bac_numero)
-               - (SELECT COALESCE(SUM(r.quantite_kg),0) FROM retraits_stock r WHERE r.bac_numero=s.bac_numero)
-               - COALESCE((
-                   SELECT SUM((part->>'quantite_kg')::numeric)
-                   FROM clients_vente cv
-                   CROSS JOIN LATERAL jsonb_array_elements(COALESCE(cv.bacs_repartition, '[]'::jsonb)) AS part
-                   WHERE (part->>'bac_numero')::integer = s.bac_numero
-                 ), 0)
-               - LEAST(
-                   (SELECT COALESCE(SUM(s3.quantite_kg),0) FROM stocks s3 WHERE s3.bac_numero=s.bac_numero),
-                   GREATEST(0,
-                     (SELECT COALESCE(SUM(cv.kg_achetes),0) FROM clients_vente cv
-                      WHERE COALESCE(cv.bacs_repartition, '[]'::jsonb) = '[]'::jsonb)
-                     - (SELECT COALESCE(SUM(s4.quantite_kg),0) FROM stocks s4 WHERE s4.bac_numero < s.bac_numero)
-                   )
-                 )
-             ) AS kg_disponible_bac,
+             bf.kg_disponible_bac, bf.kg_disponible_brut,
+             bf.kg_perdu_bac, bf.kg_retire_bac, bf.kg_vendu_bac, bf.kg_vendu_ancien,
              MAX(s.prix_par_kg) AS dernier_prix,
              COUNT(*) AS nb_depots,
              MAX(s.date_depot) AS dernier_depot,
              (SELECT s5.quantite_kg FROM stocks s5 WHERE s5.bac_numero=s.bac_numero ORDER BY s5.date_depot DESC, s5.created_at DESC LIMIT 1) AS dernier_depot_kg
       FROM stocks s
+      JOIN bac_final bf ON bf.bac_numero = s.bac_numero
       WHERE s.bac_numero IS NOT NULL
-      GROUP BY s.bac_numero, s.type_stock, s.poids_categorie
+      GROUP BY s.bac_numero, s.type_stock, s.poids_categorie,
+               bf.kg_disponible_bac, bf.kg_disponible_brut, bf.kg_perdu_bac, bf.kg_retire_bac, bf.kg_vendu_bac, bf.kg_vendu_ancien
       ORDER BY s.bac_numero, dernier_depot DESC, s.poids_categorie`);
+
+    // Résumé des 7 bacs (inclut les bacs sans dépôt mais ayant des mouvements)
+    const bacsResume = await db.query(`${BAC_CTE} SELECT * FROM bac_final ORDER BY bac_numero`);
 
     // Stock vendu (par type) — on associe les ventes aux stocks du même type
     const ventes = await db.query(`
@@ -127,13 +164,15 @@ const totaux = await db.query(`
   FROM stocks s`);
 const t = totaux.rows[0];
 const reste_kg = parseFloat(t.total_kg_achete) - parseFloat(t.total_kg_vendu) - parseFloat(t.total_kg_perdu) - parseFloat(t.total_kg_retire || 0);
-
-    
+// Somme réelle des bacs (valeurs brutes, sans plancher à 0) et écart avec le total global
+const somme_bacs_kg = bacsResume.rows.reduce((a, b) => a + parseFloat(b.kg_disponible_brut || 0), 0);
+const ecart_non_affecte_kg = Math.round((reste_kg - somme_bacs_kg) * 100) / 100;
 
     res.json({
       bacs: entrees.rows,
       par_type: parType.rows,
-      totaux: { ...t, reste_kg },
+      bacs_resume: bacsResume.rows,
+      totaux: { ...t, reste_kg, somme_bacs_kg, ecart_non_affecte_kg },
     });
   } catch (err) {
     console.error('etatBacs:', err);
@@ -231,18 +270,9 @@ const retirerStock = async (req, res) => {
     await client.query('SELECT pg_advisory_xact_lock($1)', [741025]);
     await client.query('SELECT id FROM stocks WHERE bac_numero=$1 FOR UPDATE', [bac]);
     const dispo = await client.query(`
+      ${BAC_CTE}
       SELECT
-        COALESCE((SELECT SUM(quantite_kg) FROM stocks WHERE bac_numero=$1),0)
-        - COALESCE((SELECT SUM(kg_perdus) FROM pertes_stock WHERE bac_numero=$1),0)
-        - COALESCE((SELECT SUM(quantite_kg) FROM retraits_stock WHERE bac_numero=$1),0)
-        - COALESCE((SELECT SUM((part->>'quantite_kg')::numeric) FROM clients_vente cv CROSS JOIN LATERAL jsonb_array_elements(COALESCE(cv.bacs_repartition, '[]'::jsonb)) AS part WHERE (part->>'bac_numero')::integer=$1),0)
-        - LEAST(
-            COALESCE((SELECT SUM(quantite_kg) FROM stocks WHERE bac_numero=$1),0),
-            GREATEST(0,
-              (SELECT COALESCE(SUM(cv.kg_achetes),0) FROM clients_vente cv WHERE COALESCE(cv.bacs_repartition, '[]'::jsonb)='[]'::jsonb)
-              - COALESCE((SELECT SUM(s4.quantite_kg) FROM stocks s4 WHERE s4.bac_numero < $1),0)
-            )
-          ) AS disponible_bac,
+        (SELECT kg_disponible_bac FROM bac_final WHERE bac_numero = $1) AS disponible_bac,
         COALESCE((SELECT SUM(s.quantite_kg) FROM stocks s),0)
         - COALESCE((SELECT SUM(cv.kg_achetes) FROM clients_vente cv),0)
         - COALESCE((SELECT SUM(p.kg_perdus) FROM pertes_stock p),0)
