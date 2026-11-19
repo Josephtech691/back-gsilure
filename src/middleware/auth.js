@@ -32,4 +32,14 @@ const adminOnly = (req, res, next) => {
   next();
 };
 
-module.exports = { authenticate, adminOnly };
+/**
+ * Middleware : restreint l'accès au compte développeur uniquement.
+ */
+const devOnly = (req, res, next) => {
+  if (req.user?.role !== 'developer') {
+    return res.status(403).json({ message: 'Accès réservé au développeur.' });
+  }
+  next();
+};
+
+module.exports = { authenticate, adminOnly, devOnly };
