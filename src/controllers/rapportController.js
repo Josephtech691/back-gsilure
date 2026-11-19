@@ -8,13 +8,14 @@ const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').re
 
 // ─── Collecte des données ────────────────────────────────────
 async function collecterDonnees(dateDebut, dateFin) {
-  const [stockAvant, stockAjoute, ventes, mouvements, encaissements, pertes, caisseAvant, depotsSuspects, pertesDetail, demandesRefusees, modificationsJournee] = await Promise.all([
+  const [stockAvant, stockAjoute, ventes, mouvements, encaissements, pertes, caisseAvant, depotsSuspects, pertesDetail, demandesRefusees, modificationsJournee, retraitsDetail] = await Promise.all([
     // Kg restant en stock à la fin de la veille du jour de début choisi
     db.query(`
       SELECT GREATEST(0,
         COALESCE((SELECT SUM(quantite_kg) FROM stocks WHERE date_depot < $1::date), 0)
         - COALESCE((SELECT SUM(cv.kg_achetes) FROM ventes_journees vj JOIN clients_vente cv ON cv.journee_id = vj.id WHERE vj.date_vente < $1::date), 0)
         - COALESCE((SELECT SUM(kg_perdus) FROM pertes_stock WHERE date_perte < $1::date), 0)
+        - COALESCE((SELECT SUM(quantite_kg) FROM retraits_stock WHERE date_retrait < $1::date), 0)
       ) AS kg`, [dateDebut]),
     // Kg ajoutés du jour de début jusqu'à la fin du jour de fin (inclus)
     db.query(`SELECT COALESCE(SUM(quantite_kg),0) AS kg FROM stocks WHERE date_depot BETWEEN $1::date AND $2::date`, [dateDebut, dateFin]),
@@ -73,9 +74,16 @@ async function collecterDonnees(dateDebut, dateFin) {
               WHERE d.type='modification_journee'
                 AND COALESCE(d.date_cible, d.created_at::date) BETWEEN $1::date AND $2::date
               ORDER BY d.created_at`, [dateDebut, dateFin]),
+    // Retraits physiques de stock sur la période
+    db.query(`SELECT r.date_retrait::text AS date, r.bac_numero, r.quantite_kg, r.commentaire,
+                     u.nom || ' ' || u.prenom AS auteur
+              FROM retraits_stock r LEFT JOIN users u ON u.id = r.retire_par
+              WHERE r.date_retrait BETWEEN $1::date AND $2::date ORDER BY r.date_retrait, r.created_at`, [dateDebut, dateFin]),
   ]);
 
   const kgStockTotal = parseFloat(stockAvant.rows[0].kg) + parseFloat(stockAjoute.rows[0].kg);
+
+  const kgRetire = retraitsDetail.rows.reduce((a, r) => a + parseFloat(r.quantite_kg), 0);
 
   const parJour = {};
   for (const v of ventes.rows) (parJour[v.date] ||= []).push(v);
@@ -93,7 +101,14 @@ async function collecterDonnees(dateDebut, dateFin) {
   const caisseDepart = parseFloat(caisseAvant.rows[0]?.montant || 0);
   const caisseTotale = caisseDepart + totalEncaisse + totalAjouts;
 
+  const kgVenduPeriode = ventes.rows.reduce((a, v) => a + parseFloat(v.kg_achetes), 0);
+  const kgPerduPeriode = parseFloat(pertes.rows[0].kg);
+  const kgRestantFin = kgStockTotal - kgVenduPeriode - kgPerduPeriode - kgRetire;
+
   return {
+    retraits: { kg: kgRetire, valeur: kgRetire * PRIX_KG },
+    retraitsDetail: retraitsDetail.rows,
+    kgRestantFin,
     stock: { kgAvant: parseFloat(stockAvant.rows[0].kg), kgAjoute: parseFloat(stockAjoute.rows[0].kg), kgTotal: kgStockTotal, valeur: kgStockTotal * PRIX_KG },
     parJour,
     totaux: { kgVendu: totalKgVendu, encaisse: totalEncaisse, reste: totalReste },
@@ -174,6 +189,9 @@ function construireHTML(d, dateDebut, dateFin) {
     ['14', 'Caisse restante (après sorties)', F(d.caisseRestante)],
     ['15', 'Kg total perdu', KG(d.pertes.kg)],
     ['16', 'Valeur totale perdue', F(d.pertes.valeur)],
+    ['17', 'Kg total retiré du stock', KG(d.retraits.kg)],
+    ['18', 'Valeur totale retirée', F(d.retraits.valeur)],
+    ['19', 'Kg restant en fin de période', KG(d.kgRestantFin)],
   ];
 
   return `<!DOCTYPE html>
@@ -222,6 +240,8 @@ function construireHTML(d, dateDebut, dateFin) {
         <div class="kv"><span>Kg ajoutés pendant la période</span><b>${KG(d.stock.kgAjoute)}</b></div>
         <div class="kv total"><span>Kg total déposé (disponible)</span><b>${KG(d.stock.kgTotal)}</b></div>
         <div class="kv total"><span>Valeur du stock (2 500 F/kg)</span><b>${F(d.stock.valeur)}</b></div>
+        <div class="kv red"><span>Kg retirés du stock pendant la période</span><b>${KG(d.retraits.kg)}</b></div>
+        <div class="kv total"><span>Kg restant en fin de période (déposé − vendu − perdu − retiré)</span><b>${KG(d.kgRestantFin)}</b></div>
       </div>
 
       <div class="section">
@@ -260,6 +280,8 @@ function construireHTML(d, dateDebut, dateFin) {
         ${d.depotsSuspects.length ? `<table><thead><tr><th>Date</th><th>Type de stock</th><th>Quantité</th><th>Bac</th><th>Enregistré par</th><th>Note</th></tr></thead><tbody>${d.depotsSuspects.map(x => `<tr><td>${esc(x.date)}</td><td>${esc(x.type_stock || '—')}</td><td>${KG(x.quantite_kg)}</td><td>${esc(x.bac_numero || '—')}</td><td>${esc(x.auteur || '—')}</td><td>${esc(x.commentaire || '—')}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">Aucun dépôt de stock sur cette période.</div>'}
         <h3 style="font-weight:bold;margin:14px 0 5px;">Pertes et mortalité de poissons</h3>
         ${d.pertesDetail.length ? `<table><thead><tr><th>Date</th><th>Catégorie</th><th>Stock</th><th>Quantité</th><th>Déclaré par</th><th>Commentaire</th></tr></thead><tbody>${d.pertesDetail.map(x => `<tr><td>${esc(x.date)}</td><td>${x.type_perte === 'mort' ? 'Mortalité' : 'Perte'}</td><td>${esc(x.type_stock || '—')}</td><td>${KG(x.kg_perdus)}</td><td>${esc(x.auteur || '—')}</td><td>${esc(x.commentaire || '—')}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">Aucune perte ou mortalité déclarée sur cette période.</div>'}
+        <h3 style="font-weight:bold;margin:14px 0 5px;">Retraits de stock</h3>
+        ${d.retraitsDetail.length ? `<table><thead><tr><th>Date</th><th>Bac</th><th>Quantité</th><th>Effectué par</th><th>Commentaire</th></tr></thead><tbody>${d.retraitsDetail.map(x => `<tr><td>${esc(x.date)}</td><td>${esc(x.bac_numero || '—')}</td><td>${KG(x.quantite_kg)}</td><td>${esc(x.auteur || '—')}</td><td>${esc(x.commentaire || '—')}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">Aucun retrait de stock sur cette période.</div>'}
         <h3 style="font-weight:bold;margin:14px 0 5px;">Demandes de modification de journée</h3>
         ${d.modificationsJournee.length ? `<table><thead><tr><th>Date</th><th>Employé</th><th>Statut</th><th>Motif</th></tr></thead><tbody>${d.modificationsJournee.map(x => `<tr><td>${esc(x.date)}</td><td>${esc(x.employe || '—')}</td><td>${esc(x.statut || '—')}</td><td>${esc(x.motif || '—')}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">Aucune demande de modification de journée sur cette période.</div>'}
       </div>
