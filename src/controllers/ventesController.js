@@ -223,9 +223,26 @@ const modifierClient = async (req, res) => {
         return res.status(403).json({ message: 'Journée verrouillée.' });
     }
 
+    // Si les kg changent, la répartition par bac est recalculée (mêmes pourcentages) pour rester cohérente avec le stock.
+    let nouvelleRepartition = null;
+    const nouveauxKg = kg_achetes !== undefined && kg_achetes !== null && kg_achetes !== '' ? Number(kg_achetes) : null;
+    const ancienneRep = Array.isArray(row.bacs_repartition) ? row.bacs_repartition : [];
+    if (nouveauxKg && nouveauxKg > 0 && ancienneRep.length > 0) {
+      const somme = ancienneRep.reduce((a, b) => a + Number(b.quantite_kg || 0), 0);
+      if (Math.abs(somme - nouveauxKg) > 0.005) {
+        nouvelleRepartition = ancienneRep.map(b => ({
+          ...b,
+          quantite_kg: somme > 0 ? Math.round(Number(b.quantite_kg || 0) / somme * nouveauxKg * 100) / 100 : 0
+        }));
+        const avantDernier = nouvelleRepartition.slice(0, -1).reduce((a, b) => a + b.quantite_kg, 0);
+        nouvelleRepartition[nouvelleRepartition.length - 1].quantite_kg = Math.round((nouveauxKg - avantDernier) * 100) / 100;
+      }
+    }
+
     const r = await db.query(
       `UPDATE clients_vente
        SET kg_achetes      = COALESCE($1, kg_achetes),
+           bacs_repartition = COALESCE($10::jsonb, bacs_repartition),
            montant_recu    = COALESCE($2, montant_recu),
            heure_approx    = COALESCE($3, heure_approx),
            commentaire     = $4,
@@ -237,7 +254,8 @@ const modifierClient = async (req, res) => {
        WHERE id = $7 RETURNING *`,
       [kg_achetes ?? null, montant_recu ?? null, heure_approx ?? null,
        commentaire ?? row.commentaire, type_stock ?? null, poids_categorie ?? null, clientId,
-       client_nom ? client_nom.trim().toUpperCase() : null, poidsSelectionnes]
+       client_nom ? client_nom.trim().toUpperCase() : null, poidsSelectionnes,
+       nouvelleRepartition ? JSON.stringify(nouvelleRepartition) : null]
     );
     res.json({ client: r.rows[0] });
   } catch (err) {
@@ -1116,6 +1134,23 @@ const graphiquesAdmin = async (req, res) => {
       console.error('Erreur SQL graphique poids:', poidsErreur);
     }
 
+    let kgVendusParBac = { rows: [] };
+    try {
+      kgVendusParBac = await db.query(`
+        SELECT (part->>'bac_numero')::integer AS bac_numero,
+               COALESCE(SUM((part->>'quantite_kg')::numeric), 0)::float AS kg
+        FROM ventes_journees vj
+        JOIN clients_vente cv ON cv.journee_id = vj.id
+        CROSS JOIN LATERAL jsonb_array_elements(COALESCE(cv.bacs_repartition, '[]'::jsonb)) AS part
+        WHERE vj.date_vente BETWEEN $1::date AND $2::date
+          AND NULLIF(part->>'bac_numero', '') IS NOT NULL
+        GROUP BY (part->>'bac_numero')::integer
+        ORDER BY bac_numero
+      `, [date_debut, date_fin]);
+    } catch (bacErr) {
+      console.warn('Répartition des kg vendus par bac indisponible:', bacErr.message);
+    }
+
     const employesParJour = await db.query(`
       SELECT vj.date_vente::text AS date, TO_CHAR(vj.date_vente, 'DD/MM') AS date_label,
              u.id AS employe_id,
@@ -1136,6 +1171,7 @@ const graphiquesAdmin = async (req, res) => {
       employes: employes.rows,
       produits: produits.rows,
       poids_vendus: poidsVendus.rows,
+      kg_vendus_par_bac: kgVendusParBac.rows,
       poids_erreur: poidsErreur,
       employes_par_jour: employesParJour.rows,
       date_debut,

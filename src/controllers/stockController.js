@@ -24,9 +24,16 @@ const BAC_CTE = `
   per AS (SELECT bac_numero, SUM(kg_perdus) AS kg FROM pertes_stock WHERE bac_numero IS NOT NULL GROUP BY bac_numero),
   ret AS (SELECT bac_numero, SUM(quantite_kg) AS kg FROM retraits_stock GROUP BY bac_numero),
   vrep AS (
-    SELECT (part->>'bac_numero')::integer AS bac_numero, SUM((part->>'quantite_kg')::numeric) AS kg
+    -- La répartition de chaque vente est mise à l'échelle des kg réellement vendus (kg_achetes),
+    -- car une vente modifiée après coup peut avoir une répartition devenue obsolète.
+    SELECT (part->>'bac_numero')::integer AS bac_numero,
+           SUM((part->>'quantite_kg')::numeric * CASE WHEN sp.total > 0 THEN cv.kg_achetes / sp.total ELSE 1 END) AS kg
     FROM clients_vente cv
     CROSS JOIN LATERAL jsonb_array_elements(COALESCE(cv.bacs_repartition, '[]'::jsonb)) AS part
+    CROSS JOIN LATERAL (
+      SELECT COALESCE(SUM((p2->>'quantite_kg')::numeric), 0) AS total
+      FROM jsonb_array_elements(COALESCE(cv.bacs_repartition, '[]'::jsonb)) AS p2
+    ) sp
     WHERE NULLIF(part->>'bac_numero','') IS NOT NULL
     GROUP BY (part->>'bac_numero')::integer
   ),
@@ -167,12 +174,21 @@ const reste_kg = parseFloat(t.total_kg_achete) - parseFloat(t.total_kg_vendu) - 
 // Somme réelle des bacs (valeurs brutes, sans plancher à 0) et écart avec le total global
 const somme_bacs_kg = bacsResume.rows.reduce((a, b) => a + parseFloat(b.kg_disponible_brut || 0), 0);
 const ecart_non_affecte_kg = Math.round((reste_kg - somme_bacs_kg) * 100) / 100;
+// Détail de l'écart : ecart = déposé sans bac − perdu sans bac − ventes non imputées à un bac
+const sans = await db.query(`
+  SELECT (SELECT COALESCE(SUM(quantite_kg),0) FROM stocks WHERE bac_numero IS NULL) AS depose_sans_bac,
+         (SELECT COALESCE(SUM(kg_perdus),0) FROM pertes_stock WHERE bac_numero IS NULL) AS perdu_sans_bac`);
+const r2 = v => Math.round(v * 100) / 100;
+const depose_sans_bac_kg = r2(parseFloat(sans.rows[0].depose_sans_bac));
+const perdu_sans_bac_kg = r2(parseFloat(sans.rows[0].perdu_sans_bac));
+const vente_non_imputee_kg = r2(parseFloat(t.total_kg_vendu)
+  - bacsResume.rows.reduce((a, b) => a + parseFloat(b.kg_vendu_bac || 0) + parseFloat(b.kg_vendu_ancien || 0), 0));
 
     res.json({
       bacs: entrees.rows,
       par_type: parType.rows,
       bacs_resume: bacsResume.rows,
-      totaux: { ...t, reste_kg, somme_bacs_kg, ecart_non_affecte_kg },
+      totaux: { ...t, reste_kg, somme_bacs_kg, ecart_non_affecte_kg, depose_sans_bac_kg, perdu_sans_bac_kg, vente_non_imputee_kg },
     });
   } catch (err) {
     console.error('etatBacs:', err);
@@ -357,4 +373,4 @@ const supprimerDepot = async (req, res) => {
   } catch (err) { res.status(500).json({ message: 'Erreur serveur.' }); }
 };
 
-module.exports = { ajouterDepot, listerDepots, etatBacs, resumeStock, listerPrix, modifierPrix, retirerStock, listerRetraitsStock, supprimerRetraitStock, supprimerDepot };
+module.exports = { BAC_CTE, ajouterDepot, listerDepots, etatBacs, resumeStock, listerPrix, modifierPrix, retirerStock, listerRetraitsStock, supprimerRetraitStock, supprimerDepot };
