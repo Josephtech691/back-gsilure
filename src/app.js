@@ -35,6 +35,9 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
+// Journal automatique des erreurs (doit précéder les parseurs pour capter aussi leurs erreurs)
+app.use(require('./middleware/requestMonitor').requestMonitor);
+
 // Vercel/serverless: keep payload limits explicit.
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
@@ -50,6 +53,8 @@ app.use('/api/pertes', require('./routes/pertes'));
 app.use('/api/periodes', require('./routes/periodes'));
 app.use('/api/clients', require('./routes/clients'));
 app.use('/api/rapports', require('./routes/rapports'));
+app.use('/api/errors', require('./routes/errors'));
+app.use('/api/dev', require('./routes/dev'));
 app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'poissonnerie-backend', health: '/health' });
 });
