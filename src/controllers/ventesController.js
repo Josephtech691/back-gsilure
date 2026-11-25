@@ -4,8 +4,18 @@ const { getConfig: getPeriodeConfig } = require('./periodeController');
 const PRIX_KG = 2500;
 
 const today = () => new Date().toISOString().split('T')[0];
+// Normalise une date (objet Date renvoyé par pg pour un champ DATE, ou texte) en 'YYYY-MM-DD'.
+// pg crée les Date à minuit en heure locale : on lit donc les composantes locales (pas toISOString).
+const versDateStr = (date) => {
+  if (date instanceof Date) {
+    const p = (n) => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())}`;
+  }
+  return String(date).slice(0, 10);
+};
 const dateDans45Jours = (date) => {
-  const d = new Date(`${String(date).slice(0, 10)}T00:00:00Z`);
+  const d = new Date(`${versDateStr(date)}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return false;
   const limite = new Date(`${today()}T00:00:00Z`);
   limite.setUTCDate(limite.getUTCDate() - 45);
   return d >= limite && d <= new Date(`${today()}T23:59:59Z`);
@@ -859,7 +869,8 @@ const demanderModification = async (req, res) => {
       'SELECT * FROM ventes_journees WHERE id = $1 AND employe_id = $2', [journee_id, req.user.id]
     );
     if (!j.rows.length) return res.status(404).json({ message: 'Journée non trouvée.' });
-    if (!dateDans45Jours(j.rows[0].date_vente))
+    const dateVenteStr = versDateStr(j.rows[0].date_vente);
+    if (!dateDans45Jours(dateVenteStr))
       return res.status(403).json({ message: 'Vous ne pouvez pas demander la modification d’une journée datant de plus de 45 jours.' });
 
     const existante = await db.query(
@@ -872,8 +883,8 @@ const demanderModification = async (req, res) => {
     const r = await db.query(
       `INSERT INTO demandes (employe_id, type, ref_id, ref_table, date_cible, motif, meta)
        VALUES ($1, 'modification_journee', $2, 'ventes_journees', $3, $4, $5) RETURNING *`,
-      [req.user.id, journee_id, j.rows[0].date_vente, motif,
-       JSON.stringify({ journee_id, date: j.rows[0].date_vente })]
+      [req.user.id, journee_id, dateVenteStr, motif,
+       JSON.stringify({ journee_id, date: dateVenteStr })]
     );
     res.status(201).json({ message: "Demande envoyée.", demande: r.rows[0] });
   } catch (err) {
